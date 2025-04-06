@@ -18,4 +18,4 @@ A desktop-based slot machine game built with Python and Tkinter. Complete with s
 
 ## 📸 Preview
 
-![Slot Machine Screenshot](images/projects/slot-machine-GUI.png)
+![Slot Machine Screenshot](images/slot-machine-GUI.png)
