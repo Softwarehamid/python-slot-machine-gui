@@ -6,7 +6,6 @@ from uuid import uuid4
 from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 # ---------- paths ----------
 BASE_DIR = Path(__file__).parent
@@ -37,16 +36,18 @@ def payout(reels, bet):
     return 0
 
 def play_sound(file_path: Path, muted: bool = False):
+    """Autoplay a short wav without showing the player."""
     if not file_path.exists():
         return
     data = file_path.read_bytes()
     b64 = base64.b64encode(data).decode("utf-8")
     html = f"""
-    <audio autoplay {"muted" if muted else ""}>
+    <audio id="snd-{uuid4()}" autoplay {"muted" if muted else ""} style="display:none">
       <source src="data:audio/wav;base64,{b64}" type="audio/wav">
     </audio>
     """
-    components.html(html, height=0, key=f"snd-{uuid4()}")
+    # Use markdown + unsafe_allow_html to avoid components height issues
+    st.markdown(html, unsafe_allow_html=True)
 
 def init_state():
     ss = st.session_state
