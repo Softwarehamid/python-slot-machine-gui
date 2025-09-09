@@ -2,16 +2,15 @@ import random
 import json
 from io import BytesIO
 from pathlib import Path
-
 import streamlit as st
 
-# ---------------- paths ----------------
+# paths
 BASE_DIR = Path(__file__).parent
 SND_SPIN = BASE_DIR / "assets" / "sound" / "spin.wav"
 SND_WIN  = BASE_DIR / "assets" / "sound" / "win.wav"
 IMG_PREVIEW = BASE_DIR / "images" / "slot-machine-GUI.png"
 
-# ---------------- game data ----------------
+# game data
 SYMBOLS = ["🍒", "🍋", "🔔", "⭐", "7️⃣"]
 PAYOUTS = {
     ("7️⃣","7️⃣","7️⃣"): 50,
@@ -21,7 +20,6 @@ PAYOUTS = {
     ("🍒","🍒","🍒"): 8,
 }
 
-# ---------------- helpers ----------------
 def spin_reels():
     return [random.choice(SYMBOLS) for _ in range(3)]
 
@@ -29,7 +27,7 @@ def payout(reels, bet):
     trip = tuple(reels)
     if trip in PAYOUTS:
         return bet * PAYOUTS[trip]
-    if len(set(reels)) == 2:   # two of a kind
+    if len(set(reels)) == 2:
         return bet * 2
     return 0
 
@@ -41,16 +39,18 @@ def init_state():
     ss.setdefault("hardcore", False)
     ss.setdefault("last_reels", ["❔","❔","❔"])
     ss.setdefault("last_win", 0)
+    ss.setdefault("total_deposited", 0)
 
 def reset_stats():
     if st.session_state.hardcore:
-        st.warning("Hardcore mode is on. Reset is disabled.")
+        st.warning("Hardcore mode on. Reset disabled.")
         return
     st.session_state.balance = 100
     st.session_state.spins = 0
     st.session_state.wins = 0
     st.session_state.last_reels = ["❔","❔","❔"]
     st.session_state.last_win = 0
+    st.session_state.total_deposited = 0
 
 def save_blob():
     data = {
@@ -58,6 +58,7 @@ def save_blob():
         "spins": st.session_state.spins,
         "wins": st.session_state.wins,
         "hardcore": st.session_state.hardcore,
+        "total_deposited": st.session_state.total_deposited,
     }
     buf = BytesIO()
     buf.write(json.dumps(data).encode("utf-8"))
@@ -70,26 +71,23 @@ def load_blob(uploaded):
     st.session_state.spins = int(data.get("spins", 0))
     st.session_state.wins = int(data.get("wins", 0))
     st.session_state.hardcore = bool(data.get("hardcore", False))
+    st.session_state.total_deposited = int(data.get("total_deposited", 0))
 
-# ---------------- UI ----------------
+# UI
 st.set_page_config(page_title="Python Slot Machine", page_icon="🎰", layout="centered")
 init_state()
 
-# header with preview image, no PIL
 col_img, col_title = st.columns([1,2], vertical_alignment="center")
 with col_img:
-    try:
-        if IMG_PREVIEW.exists():
-            st.image(str(IMG_PREVIEW), use_container_width=True)
-        else:
-            st.caption(f"Preview not found: {IMG_PREVIEW}")
-    except Exception as e:
-        st.caption(f"Preview load error: {e}")
+    if IMG_PREVIEW.exists():
+        st.image(str(IMG_PREVIEW), use_column_width=True)
+    else:
+        st.caption(f"Preview not found: {IMG_PREVIEW.name}")
 
 with col_title:
     st.title("Python Slot Machine")
     st.caption("Runs in your browser with Streamlit.")
-    st.caption("Session saves live in your browser. You can also download a save file.")
+    st.caption("Session saves in memory. Download or load a save file anytime.")
 
 with st.sidebar:
     st.header("Settings")
@@ -98,7 +96,18 @@ with st.sidebar:
         value=st.session_state.hardcore,
         help="Disables reset while on."
     )
+
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
+
+    st.divider()
+    st.header("Funds")
+    deposit = st.number_input("Amount to add", min_value=1, max_value=100000, value=10, step=1)
+    if st.button("Add funds"):
+        st.session_state.balance += deposit
+        st.session_state.total_deposited += deposit
+        st.success(f"Added ${deposit}")
+
+    st.caption(f"Total deposited: ${st.session_state.total_deposited}")
 
     st.divider()
     st.write("Save or load")
@@ -117,18 +126,20 @@ st.subheader(f"Balance: ${st.session_state.balance}")
 st.text(f"Spins: {st.session_state.spins}   Wins: {st.session_state.wins}")
 
 r1, r2, r3 = st.columns(3)
-with r1:  st.metric("Reel 1", st.session_state.last_reels[0])
-with r2:  st.metric("Reel 2", st.session_state.last_reels[1])
-with r3:  st.metric("Reel 3", st.session_state.last_reels[2])
+with r1:
+    st.metric("Reel 1", st.session_state.last_reels[0])
+with r2:
+    st.metric("Reel 2", st.session_state.last_reels[1])
+with r3:
+    st.metric("Reel 3", st.session_state.last_reels[2])
 
 left, right = st.columns(2)
 
 if left.button("Spin", use_container_width=True):
-    # play spin sound with string path
     if SND_SPIN.exists():
         st.audio(str(SND_SPIN))
     if st.session_state.balance < bet:
-        st.error("Not enough balance")
+        st.error("Insufficient balance")
     else:
         st.session_state.balance -= bet
         reels = spin_reels()
