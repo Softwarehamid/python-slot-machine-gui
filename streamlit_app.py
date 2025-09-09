@@ -6,6 +6,7 @@ from io import BytesIO
 from uuid import uuid4
 from pathlib import Path
 import streamlit as st
+from streamlit import components
 
 # ---------- paths ----------
 BASE_DIR = Path(__file__).parent
@@ -35,33 +36,6 @@ def payout(reels, bet):
         return bet * 2
     return 0
 
-def audio_snippet(file_path: Path, muted: bool, delay_ms: int = 0) -> str:
-    """
-    Force a fresh DOM node each time so the sound plays on every spin.
-    Use both <audio autoplay> and JS Audio().play() for reliability.
-    """
-    if not file_path.exists():
-        return ""
-    b64 = base64.b64encode(file_path.read_bytes()).decode("utf-8")
-    uid = str(uuid4()).replace("-", "")
-    data_url = f"data:audio/wav;base64,{b64}#{uid}"  # unique fragment busts diff caching
-    return f"""
-    <div id="snd-wrap-{uid}">
-      <audio id="snd-aud-{uid}" autoplay style="display:none">
-        <source src="{data_url}" type="audio/wav">
-      </audio>
-      <script>
-        setTimeout(() => {{
-          try {{
-            const a = new Audio("{data_url}");
-            a.muted = {str(muted).lower()};
-            a.play().catch(()=>{{}});
-          }} catch(e) {{}}
-        }}, {int(delay_ms)});
-      </script>
-    </div>
-    """
-
 def schedule_rerun(delay_ms: int):
     st.markdown(
         f"""
@@ -83,12 +57,13 @@ def init_state():
     ss.setdefault("last_reels", ["❔", "❔", "❔"])
     ss.setdefault("last_win", 0)
     ss.setdefault("total_deposited", 0)
-    ss.setdefault("queue_spin_snd", False)
-    ss.setdefault("queue_win_snd", False)
     ss.setdefault("auto_spinning", False)
     ss.setdefault("auto_spin_remaining", 0)
     ss.setdefault("auto_delay_ms", 350)
     ss.setdefault("mute", False)
+    ss.setdefault("audio_mounted", False)
+    ss.setdefault("queue_spin", False)
+    ss.setdefault("queue_win", False)
 
 def reset_stats_only():
     st.session_state.spins = 0
@@ -100,8 +75,8 @@ def reset_all():
     reset_stats_only()
     st.session_state.balance = 100
     st.session_state.total_deposited = 0
-    st.session_state.queue_spin_snd = False
-    st.session_state.queue_win_snd = False
+    st.session_state.queue_spin = False
+    st.session_state.queue_win = False
 
 def save_blob():
     data = {
@@ -127,9 +102,62 @@ def load_blob(uploaded):
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
 
+def mount_audio_bridge():
+    """Create a persistent, hidden component that plays sounds on demand."""
+    if st.session_state.audio_mounted:
+        return
+    spin_b64 = base64.b64encode(SND_SPIN.read_bytes()).decode("utf-8") if SND_SPIN.exists() else ""
+    win_b64  = base64.b64encode(SND_WIN.read_bytes()).decode("utf-8")  if SND_WIN.exists()  else ""
+    components.v1.html(
+        f"""
+        <script>
+        (function() {{
+          const SPIN_URL = "data:audio/wav;base64,{spin_b64}";
+          const WIN_URL  = "data:audio/wav;base64,{win_b64}";
+          window._spinSnd = new Audio(SPIN_URL);
+          window._winSnd  = new Audio(WIN_URL);
+          window._spinSnd.preload = "auto";
+          window._winSnd.preload  = "auto";
+          window.addEventListener("message", (ev) => {{
+            const d = ev.data || {{}};
+            if (d.type === "PLAY_SPIN") {{
+              try {{
+                window._spinSnd.muted = !!d.muted;
+                window._spinSnd.currentTime = 0;
+                window._spinSnd.play().catch(()=>{{}});
+              }} catch(e) {{}}
+            }}
+            if (d.type === "PLAY_WIN") {{
+              try {{
+                window._winSnd.muted = !!d.muted;
+                window._winSnd.currentTime = 0;
+                window._winSnd.play().catch(()=>{{}});
+              }} catch(e) {{}}
+            }}
+          }});
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+    st.session_state.audio_mounted = True
+
+def post_play(kind: str, muted: bool, delay_ms: int = 0):
+    st.markdown(
+        f"""
+        <script>
+          setTimeout(() => {{
+            window.postMessage({{type: "{kind}", muted: {str(muted).lower()}}}, "*");
+          }}, {int(delay_ms)});
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
+
 # ---------- UI ----------
 st.set_page_config(page_title="Python Slot Machine", page_icon="🎰", layout="centered")
 init_state()
+mount_audio_bridge()
 
 # Header
 col_img, col_title = st.columns([1, 2], vertical_alignment="center")
@@ -207,14 +235,13 @@ with st.sidebar:
         st.success("Save loaded")
         st.rerun()
 
-# Placeholders for stats and reels, then handle actions, then render
+# Placeholders
 ph_balance = st.empty()
 ph_stats   = st.empty()
-
-reel_cols = st.columns(3)
-ph_r1 = reel_cols[0].empty()
-ph_r2 = reel_cols[1].empty()
-ph_r3 = reel_cols[2].empty()
+cols = st.columns(3)
+ph_r1 = cols[0].empty()
+ph_r2 = cols[1].empty()
+ph_r3 = cols[2].empty()
 
 # Buttons
 b1, b2, b3 = st.columns([1, 1, 1])
@@ -224,7 +251,7 @@ reset_all_clicked   = b2.button("Reset balance and stats", use_container_width=T
 reset_stats_clicked = b3.button("Reset stats only", use_container_width=True, disabled=st.session_state.hardcore)
 
 def do_spin():
-    st.session_state.queue_spin_snd = True
+    st.session_state.queue_spin = True
     st.session_state.balance -= bet
     reels = spin_reels()
     st.session_state.last_reels = reels
@@ -234,9 +261,9 @@ def do_spin():
     if win_amt > 0:
         st.session_state.wins += 1
         st.session_state.balance += win_amt
-        st.session_state.queue_win_snd = True
+        st.session_state.queue_win = True
 
-# Handle actions first
+# Handle actions
 if spin_clicked and can_spin and not st.session_state.auto_spinning:
     do_spin()
 
@@ -256,10 +283,9 @@ if reset_stats_clicked:
     reset_stats_only()
     st.rerun()
 
-# Render with current state
+# Render current state
 ph_balance.subheader(f"Balance: ${st.session_state.balance}")
 ph_stats.text(f"Spins: {st.session_state.spins}   Wins: {st.session_state.wins}")
-
 ph_r1.metric("Reel 1", st.session_state.last_reels[0])
 ph_r2.metric("Reel 2", st.session_state.last_reels[1])
 ph_r3.metric("Reel 3", st.session_state.last_reels[2])
@@ -271,16 +297,12 @@ if st.session_state.spins > 0:
     else:
         st.info("No win this spin")
 
-# Sounds every spin
-snippets = []
-# tiny delay on spin sound helps avoid click-timing race
-if st.session_state.queue_spin_snd:
-    snippets.append(audio_snippet(SND_SPIN, muted=st.session_state.mute, delay_ms=120))
-if st.session_state.queue_win_snd:
-    snippets.append(audio_snippet(SND_WIN, muted=st.session_state.mute, delay_ms=300))
-if snippets:
-    st.markdown("".join(snippets), unsafe_allow_html=True)
-    st.session_state.queue_spin_snd = False
-    st.session_state.queue_win_snd = False
+# Sounds via persistent audio bridge
+if st.session_state.queue_spin:
+    post_play("PLAY_SPIN", muted=st.session_state.mute, delay_ms=80)
+if st.session_state.queue_win:
+    post_play("PLAY_WIN",  muted=st.session_state.mute, delay_ms=250)
+st.session_state.queue_spin = False
+st.session_state.queue_win  = False
 
 st.caption("Symbols: 🍒 🍋 🔔 ⭐ 7️⃣")
