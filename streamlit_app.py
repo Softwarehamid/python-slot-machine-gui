@@ -1,3 +1,4 @@
+# streamlit_app.py
 import random
 import json
 import base64
@@ -31,22 +32,19 @@ def payout(reels, bet):
     trip = tuple(reels)
     if trip in PAYOUTS:
         return bet * PAYOUTS[trip]
-    if len(set(reels)) == 2:   # two of a kind
+    if len(set(reels)) == 2:
         return bet * 2
     return 0
 
 def play_sound(file_path: Path, muted: bool = False):
-    """Autoplay a short wav without showing the player."""
     if not file_path.exists():
         return
-    data = file_path.read_bytes()
-    b64 = base64.b64encode(data).decode("utf-8")
+    b64 = base64.b64encode(file_path.read_bytes()).decode("utf-8")
     html = f"""
     <audio id="snd-{uuid4()}" autoplay {"muted" if muted else ""} style="display:none">
       <source src="data:audio/wav;base64,{b64}" type="audio/wav">
     </audio>
     """
-    # Use markdown + unsafe_allow_html to avoid components height issues
     st.markdown(html, unsafe_allow_html=True)
 
 def init_state():
@@ -58,6 +56,8 @@ def init_state():
     ss.setdefault("last_reels", ["❔","❔","❔"])
     ss.setdefault("last_win", 0)
     ss.setdefault("total_deposited", 0)
+    ss.setdefault("queued_spin_sound", False)
+    ss.setdefault("queued_win_sound", False)
 
 def reset_stats():
     if st.session_state.hardcore:
@@ -109,10 +109,8 @@ with col_title:
 
 with st.sidebar:
     st.header("Settings")
-    st.session_state.hardcore = st.toggle(
-        "Hardcore mode", value=st.session_state.hardcore,
-        help="Disables reset while on."
-    )
+    st.session_state.hardcore = st.toggle("Hardcore mode", value=st.session_state.hardcore,
+                                          help="Disables reset while on.")
     mute = st.toggle("Mute sounds", value=False)
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
 
@@ -147,7 +145,8 @@ can_spin = st.session_state.balance >= bet
 spin_clicked = left.button("Spin", use_container_width=True, disabled=not can_spin)
 
 def do_spin():
-    play_sound(SND_SPIN, muted=mute)
+    # queue sounds, then render them at the end
+    st.session_state.queued_spin_sound = True
     st.session_state.balance -= bet
     reels = spin_reels()
     st.session_state.last_reels = reels
@@ -157,7 +156,7 @@ def do_spin():
     if win_amt > 0:
         st.session_state.wins += 1
         st.session_state.balance += win_amt
-        play_sound(SND_WIN, muted=mute)
+        st.session_state.queued_win_sound = True
 
 if spin_clicked:
     if can_spin:
@@ -172,5 +171,23 @@ if st.session_state.last_win > 0:
     st.success(f"You won ${st.session_state.last_win}")
 else:
     st.info("No win this spin")
+
+# ---------- play queued sounds at the end ----------
+if st.session_state.pop("queued_spin_sound", False):
+    play_sound(SND_SPIN, muted=mute)
+if st.session_state.pop("queued_win_sound", False):
+    # small delay after spin, via JS setTimeout
+    b64 = base64.b64encode(SND_WIN.read_bytes()).decode("utf-8") if SND_WIN.exists() else ""
+    if b64:
+        st.markdown(
+            f"""
+            <script>
+              const a = new Audio("data:audio/wav;base64,{b64}");
+              a.muted = {str(mute).lower()};
+              setTimeout(()=>a.play().catch(()=>{{}}), 300);
+            </script>
+            """,
+            unsafe_allow_html=True,
+        )
 
 st.caption("Symbols: 🍒 🍋 🔔 ⭐ 7️⃣")
