@@ -1,3 +1,4 @@
+# streamlit_app.py
 import random
 import json
 from io import BytesIO
@@ -99,44 +100,93 @@ def load_blob(uploaded):
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
 
-# ---------- audio kernel ----------
+# ---------- audio kernel (Web Audio API) ----------
 def inject_audio_kernel():
+    # Embed audio as base64. If file missing, string is empty.
     spin_b64 = base64.b64encode(SND_SPIN.read_bytes()).decode("utf-8") if SND_SPIN.exists() else ""
     win_b64  = base64.b64encode(SND_WIN.read_bytes()).decode("utf-8")  if SND_WIN.exists()  else ""
+
     st.markdown(
         f"""
         <script>
         (function() {{
           const topw = window.top || window.parent || window;
-          if (!topw.__slotKernel) {{
-            const SPIN_URL = "{'data:audio/wav;base64,' + spin_b64 if spin_b64 else ''}";
-            const WIN_URL  = "{'data:audio/wav;base64,' + win_b64  if win_b64  else ''}";
-            let spin = SPIN_URL ? new Audio(SPIN_URL) : null;
-            let win  = WIN_URL  ? new Audio(WIN_URL)  : null;
-            if (spin) spin.preload = "auto";
-            if (win)  win.preload  = "auto";
 
-            topw.__slotKernel = {{
-              enable: async function() {{
-                const kick = async (a) => {{
-                  if (!a) return;
-                  try {{
-                    await a.play();
-                    a.pause();
-                    a.currentTime = 0;
-                  }} catch (e) {{}}
-                }};
-                await kick(spin);
-                await kick(win);
-              }},
-              play: function(kind, muted) {{
-                const a = (kind === "spin") ? spin : win;
-                if (!a) return;
-                a.muted = !!muted;
-                a.currentTime = 0;
-                a.play().catch(() => {{}});
-              }}
+          function b64ToArrayBuffer(b64) {{
+            if (!b64) return null;
+            const bin = atob(b64);
+            const len = bin.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+            return bytes.buffer;
+          }}
+
+          if (!topw.__slotKernelWA) {{
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const state = {{
+              ctx,
+              gain: ctx.createGain(),
+              spinBuf: null,
+              winBuf: null,
+              unlocked: false,
             }};
+            state.gain.connect(ctx.destination);
+
+            async function decodeAll() {{
+              try {{
+                const sAB = b64ToArrayBuffer("{spin_b64}");
+                const wAB = b64ToArrayBuffer("{win_b64}");
+                if (sAB) {{
+                  state.spinBuf = await state.ctx.decodeAudioData(sAB.slice(0));
+                }}
+                if (wAB) {{
+                  state.winBuf = await state.ctx.decodeAudioData(wAB.slice(0));
+                }}
+              }} catch (e) {{
+                // ignore decode errors
+              }}
+            }}
+
+            async function ensureUnlocked() {{
+              try {{
+                if (state.ctx.state !== "running") {{
+                  await state.ctx.resume();
+                }}
+                if (!state.unlocked) {{
+                  // do a silent tick to satisfy autoplay rules
+                  const src = state.ctx.createBufferSource();
+                  src.buffer = state.spinBuf || state.winBuf;
+                  if (src.buffer) {{
+                    src.connect(state.gain);
+                    src.start(0, 0, 0.0001);
+                  }}
+                  state.unlocked = true;
+                }}
+              }} catch (e) {{}}
+            }}
+
+            function play(kind, muted) {{
+              const buf = kind === "spin" ? state.spinBuf : state.winBuf;
+              if (!buf) return;
+              try {{
+                const src = state.ctx.createBufferSource();
+                src.buffer = buf;
+                const g = state.ctx.createGain();
+                g.gain.value = muted ? 0.0 : 1.0;
+                src.connect(g);
+                g.connect(state.gain);
+                src.start();
+              }} catch (e) {{}}
+            }}
+
+            topw.__slotKernelWA = {{
+              decodeAll,
+              ensureUnlocked,
+              play,
+            }};
+
+            // Start decoding once
+            decodeAll();
           }}
         }})();
         </script>
@@ -161,8 +211,8 @@ def render_audio_unlock_button():
             btn.addEventListener("click", async () => {
               try {
                 const topw = window.top || window.parent || window;
-                if (topw.__slotKernel && typeof topw.__slotKernel.enable === "function") {
-                  await topw.__slotKernel.enable();
+                if (topw.__slotKernelWA) {
+                  await topw.__slotKernelWA.ensureUnlocked();
                   status.textContent = "Sound enabled";
                   btn.disabled = true;
                 } else {
@@ -182,9 +232,12 @@ def js_play(kind: str, muted: bool, delay_ms: int = 0):
     st.markdown(
         f"""
         <script>
-          setTimeout(function(){{
+          setTimeout(async function(){{
             const topw = window.top || window.parent || window;
-            if (topw.__slotKernel) topw.__slotKernel.play("{kind}", {str(muted).lower()});
+            if (topw.__slotKernelWA) {{
+              await topw.__slotKernelWA.ensureUnlocked();
+              topw.__slotKernelWA.play("{kind}", {str(muted).lower()});
+            }}
           }}, {int(delay_ms)});
         </script>
         """,
@@ -203,7 +256,6 @@ with col_img:
         try:
             st.image(str(IMG_PREVIEW), use_container_width=True)
         except TypeError:
-            # Older Streamlit versions
             st.image(str(IMG_PREVIEW), use_column_width=True)
     else:
         st.caption(f"Preview not found: {IMG_PREVIEW.name}")
@@ -213,7 +265,7 @@ with col_title:
     st.caption("Session saves in memory. Download or load a save file anytime.")
     st.caption(f"Mode: {'Hardcore' if st.session_state.hardcore else 'Easy'}")
 
-# Debug audio assets
+# Quick audio asset status
 st.caption(f"spin.wav found: {SND_SPIN.exists()}")
 st.caption(f"win.wav found: {SND_WIN.exists()}")
 
