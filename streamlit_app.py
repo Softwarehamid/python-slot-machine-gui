@@ -1,4 +1,3 @@
-# streamlit_app.py
 import random
 import json
 import base64
@@ -29,23 +28,21 @@ def spin_reels():
     return [random.choice(SYMBOLS) for _ in range(3)]
 
 def payout(reels, bet):
-    trip = tuple(reels)
-    if trip in PAYOUTS:
-        return bet * PAYOUTS[trip]
+    t = tuple(reels)
+    if t in PAYOUTS:
+        return bet * PAYOUTS[t]
     if len(set(reels)) == 2:
         return bet * 2
     return 0
 
-def play_sound(file_path: Path, muted: bool = False):
+def audio_html(file_path: Path, muted: bool) -> str:
     if not file_path.exists():
-        return
+        return ""
     b64 = base64.b64encode(file_path.read_bytes()).decode("utf-8")
-    html = f"""
-    <audio id="snd-{uuid4()}" autoplay {"muted" if muted else ""} style="display:none">
-      <source src="data:audio/wav;base64,{b64}" type="audio/wav">
-    </audio>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+    return (
+        f'<audio id="snd-{uuid4()}" autoplay {"muted" if muted else ""} style="display:none">'
+        f'<source src="data:audio/wav;base64,{b64}" type="audio/wav"></audio>'
+    )
 
 def init_state():
     ss = st.session_state
@@ -53,11 +50,12 @@ def init_state():
     ss.setdefault("spins", 0)
     ss.setdefault("wins", 0)
     ss.setdefault("hardcore", False)
-    ss.setdefault("last_reels", ["❔","❔","❔"])
+    ss.setdefault("last_reels", ["❔", "❔", "❔"])
     ss.setdefault("last_win", 0)
     ss.setdefault("total_deposited", 0)
-    ss.setdefault("queued_spin_sound", False)
-    ss.setdefault("queued_win_sound", False)
+    # flags for queued sounds and flow
+    ss.setdefault("queue_spin_snd", False)
+    ss.setdefault("queue_win_snd", False)
 
 def reset_stats():
     if st.session_state.hardcore:
@@ -66,9 +64,11 @@ def reset_stats():
     st.session_state.balance = 100
     st.session_state.spins = 0
     st.session_state.wins = 0
-    st.session_state.last_reels = ["❔","❔","❔"]
+    st.session_state.last_reels = ["❔", "❔", "❔"]
     st.session_state.last_win = 0
     st.session_state.total_deposited = 0
+    st.session_state.queue_spin_snd = False
+    st.session_state.queue_win_snd = False
 
 def save_blob():
     data = {
@@ -95,7 +95,7 @@ def load_blob(uploaded):
 st.set_page_config(page_title="Python Slot Machine", page_icon="🎰", layout="centered")
 init_state()
 
-col_img, col_title = st.columns([1,2], vertical_alignment="center")
+col_img, col_title = st.columns([1, 2], vertical_alignment="center")
 with col_img:
     if IMG_PREVIEW.exists():
         st.image(str(IMG_PREVIEW), use_column_width=True)
@@ -109,8 +109,11 @@ with col_title:
 
 with st.sidebar:
     st.header("Settings")
-    st.session_state.hardcore = st.toggle("Hardcore mode", value=st.session_state.hardcore,
-                                          help="Disables reset while on.")
+    st.session_state.hardcore = st.toggle(
+        "Hardcore mode",
+        value=st.session_state.hardcore,
+        help="Disables reset while on.",
+    )
     mute = st.toggle("Mute sounds", value=False)
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
 
@@ -125,8 +128,7 @@ with st.sidebar:
 
     st.divider()
     st.write("Save or load")
-    st.download_button("Download save", data=save_blob(),
-                       file_name="slot_save.json", mime="application/json")
+    st.download_button("Download save", data=save_blob(), file_name="slot_save.json", mime="application/json")
     up = st.file_uploader("Load save", type=["json"])
     if up is not None:
         load_blob(up)
@@ -136,17 +138,21 @@ st.subheader(f"Balance: ${st.session_state.balance}")
 st.text(f"Spins: {st.session_state.spins}   Wins: {st.session_state.wins}")
 
 r1, r2, r3 = st.columns(3)
-with r1:  st.metric("Reel 1", st.session_state.last_reels[0])
-with r2:  st.metric("Reel 2", st.session_state.last_reels[1])
-with r3:  st.metric("Reel 3", st.session_state.last_reels[2])
+with r1:
+    st.metric("Reel 1", st.session_state.last_reels[0])
+with r2:
+    st.metric("Reel 2", st.session_state.last_reels[1])
+with r3:
+    st.metric("Reel 3", st.session_state.last_reels[2])
 
 left, right = st.columns(2)
 can_spin = st.session_state.balance >= bet
 spin_clicked = left.button("Spin", use_container_width=True, disabled=not can_spin)
 
-def do_spin():
-    # queue sounds, then render them at the end
-    st.session_state.queued_spin_sound = True
+# ----- spin action -----
+if spin_clicked and can_spin:
+    # set results and queue sounds, then force a rerun so UI updates immediately
+    st.session_state.queue_spin_snd = True
     st.session_state.balance -= bet
     reels = spin_reels()
     st.session_state.last_reels = reels
@@ -156,38 +162,42 @@ def do_spin():
     if win_amt > 0:
         st.session_state.wins += 1
         st.session_state.balance += win_amt
-        st.session_state.queued_win_sound = True
-
-if spin_clicked:
-    if can_spin:
-        do_spin()
-    else:
-        st.error("Insufficient balance")
+        st.session_state.queue_win_snd = True
+    st.rerun()
 
 if right.button("Reset balance and stats", use_container_width=True):
     reset_stats()
 
+# status message
 if st.session_state.last_win > 0:
     st.success(f"You won ${st.session_state.last_win}")
 else:
     st.info("No win this spin")
 
-# ---------- play queued sounds at the end ----------
-if st.session_state.pop("queued_spin_sound", False):
-    play_sound(SND_SPIN, muted=mute)
-if st.session_state.pop("queued_win_sound", False):
-    # small delay after spin, via JS setTimeout
-    b64 = base64.b64encode(SND_WIN.read_bytes()).decode("utf-8") if SND_WIN.exists() else ""
-    if b64:
-        st.markdown(
+# ----- play any queued sounds at the end of the run -----
+html_parts = []
+if st.session_state.queue_spin_snd:
+    html_parts.append(audio_html(SND_SPIN, muted=mute))
+if st.session_state.queue_win_snd:
+    # slight gap after spin so you can hear both
+    if SND_WIN.exists():
+        b64 = base64.b64encode(SND_WIN.read_bytes()).decode("utf-8")
+        html_parts.append(
             f"""
             <script>
-              const a = new Audio("data:audio/wav;base64,{b64}");
-              a.muted = {str(mute).lower()};
-              setTimeout(()=>a.play().catch(()=>{{}}), 300);
+              setTimeout(() => {{
+                const a = new Audio("data:audio/wav;base64,{b64}");
+                a.muted = {str(mute).lower()};
+                a.play().catch(()=>{{}});
+              }}, 250);
             </script>
-            """,
-            unsafe_allow_html=True,
+            """
         )
+
+if html_parts:
+    st.markdown("\n".join(html_parts), unsafe_allow_html=True)
+    # clear flags so they fire again on next spin
+    st.session_state.queue_spin_snd = False
+    st.session_state.queue_win_snd = False
 
 st.caption("Symbols: 🍒 🍋 🔔 ⭐ 7️⃣")
