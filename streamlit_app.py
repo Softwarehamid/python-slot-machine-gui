@@ -4,15 +4,14 @@ from io import BytesIO
 from pathlib import Path
 
 import streamlit as st
-from PIL import Image
 
-# ---------- paths ----------
+# ---------------- paths ----------------
 BASE_DIR = Path(__file__).parent
 SND_SPIN = BASE_DIR / "assets" / "sound" / "spin.wav"
 SND_WIN  = BASE_DIR / "assets" / "sound" / "win.wav"
 IMG_PREVIEW = BASE_DIR / "images" / "slot-machine-GUI.png"
 
-# ---------- helpers ----------
+# ---------------- game data ----------------
 SYMBOLS = ["🍒", "🍋", "🔔", "⭐", "7️⃣"]
 PAYOUTS = {
     ("7️⃣","7️⃣","7️⃣"): 50,
@@ -22,6 +21,7 @@ PAYOUTS = {
     ("🍒","🍒","🍒"): 8,
 }
 
+# ---------------- helpers ----------------
 def spin_reels():
     return [random.choice(SYMBOLS) for _ in range(3)]
 
@@ -29,23 +29,18 @@ def payout(reels, bet):
     trip = tuple(reels)
     if trip in PAYOUTS:
         return bet * PAYOUTS[trip]
-    if len(set(reels)) == 2:  # two of a kind
+    if len(set(reels)) == 2:   # two of a kind
         return bet * 2
     return 0
 
 def init_state():
-    if "balance" not in st.session_state:
-        st.session_state.balance = 100
-    if "spins" not in st.session_state:
-        st.session_state.spins = 0
-    if "wins" not in st.session_state:
-        st.session_state.wins = 0
-    if "hardcore" not in st.session_state:
-        st.session_state.hardcore = False
-    if "last_reels" not in st.session_state:
-        st.session_state.last_reels = ["❔","❔","❔"]
-    if "last_win" not in st.session_state:
-        st.session_state.last_win = 0
+    ss = st.session_state
+    ss.setdefault("balance", 100)
+    ss.setdefault("spins", 0)
+    ss.setdefault("wins", 0)
+    ss.setdefault("hardcore", False)
+    ss.setdefault("last_reels", ["❔","❔","❔"])
+    ss.setdefault("last_win", 0)
 
 def reset_stats():
     if st.session_state.hardcore:
@@ -76,26 +71,43 @@ def load_blob(uploaded):
     st.session_state.wins = int(data.get("wins", 0))
     st.session_state.hardcore = bool(data.get("hardcore", False))
 
-# ---------- UI ----------
+# ---------------- UI ----------------
 st.set_page_config(page_title="Python Slot Machine", page_icon="🎰", layout="centered")
 init_state()
 
-col_img, col_title = st.columns([1,2])
+# header with preview image, no PIL
+col_img, col_title = st.columns([1,2], vertical_alignment="center")
 with col_img:
-    if IMG_PREVIEW.exists():
-        st.image(Image.open(IMG_PREVIEW), use_container_width=True)
+    try:
+        if IMG_PREVIEW.exists():
+            st.image(str(IMG_PREVIEW), use_container_width=True)
+        else:
+            st.caption(f"Preview not found: {IMG_PREVIEW}")
+    except Exception as e:
+        st.caption(f"Preview load error: {e}")
+
 with col_title:
     st.title("Python Slot Machine")
-    st.caption("Session saves live in your browser. You can also download or load a save file.")
+    st.caption("Runs in your browser with Streamlit.")
+    st.caption("Session saves live in your browser. You can also download a save file.")
 
 with st.sidebar:
     st.header("Settings")
-    st.session_state.hardcore = st.toggle("Hardcore mode", value=st.session_state.hardcore,
-                                          help="Disables reset while on.")
+    st.session_state.hardcore = st.toggle(
+        "Hardcore mode",
+        value=st.session_state.hardcore,
+        help="Disables reset while on."
+    )
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
+
     st.divider()
     st.write("Save or load")
-    dl = st.download_button("Download save", data=save_blob(), file_name="slot_save.json", mime="application/json")
+    st.download_button(
+        "Download save",
+        data=save_blob(),
+        file_name="slot_save.json",
+        mime="application/json",
+    )
     up = st.file_uploader("Load save", type=["json"])
     if up is not None:
         load_blob(up)
@@ -109,9 +121,10 @@ with r1:  st.metric("Reel 1", st.session_state.last_reels[0])
 with r2:  st.metric("Reel 2", st.session_state.last_reels[1])
 with r3:  st.metric("Reel 3", st.session_state.last_reels[2])
 
-btn_spin, btn_reset = st.columns(2)
+left, right = st.columns(2)
 
-if btn_spin.button("Spin", use_container_width=True):
+if left.button("Spin", use_container_width=True):
+    # play spin sound with string path
     if SND_SPIN.exists():
         st.audio(str(SND_SPIN))
     if st.session_state.balance < bet:
@@ -129,7 +142,7 @@ if btn_spin.button("Spin", use_container_width=True):
             if SND_WIN.exists():
                 st.audio(str(SND_WIN))
 
-if btn_reset.button("Reset balance and stats", use_container_width=True):
+if right.button("Reset balance and stats", use_container_width=True):
     reset_stats()
 
 if st.session_state.last_win > 0:
