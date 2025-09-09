@@ -1,3 +1,4 @@
+# streamlit_app.py
 import random
 import json
 import base64
@@ -121,7 +122,11 @@ init_state()
 col_img, col_title = st.columns([1, 2], vertical_alignment="center")
 with col_img:
     if IMG_PREVIEW.exists():
-        st.image(str(IMG_PREVIEW), use_container_width=True)
+        # Cross-version support: use_container_width (new) -> fallback to use_column_width (old)
+        try:
+            st.image(str(IMG_PREVIEW), use_container_width=True)
+        except TypeError:
+            st.image(str(IMG_PREVIEW), use_column_width=True)
     else:
         st.caption(f"Preview not found: {IMG_PREVIEW.name}")
 with col_title:
@@ -194,18 +199,18 @@ with st.sidebar:
 st.subheader(f"Balance: ${st.session_state.balance}")
 st.text(f"Spins: {st.session_state.spins}   Wins: {st.session_state.wins}")
 
-# Reels placeholders (render after handling actions)
+# Reels placeholders
 cols = st.columns(3)
 ph1 = cols[0].empty()
 ph2 = cols[1].empty()
 ph3 = cols[2].empty()
 
-# Action buttons
-a1, a2, a3 = st.columns([1, 1, 1])
+# Buttons
+b1, b2, b3 = st.columns([1, 1, 1])
 can_spin = st.session_state.balance >= bet
-spin_clicked = a1.button("Spin", use_container_width=True, disabled=not can_spin or st.session_state.auto_spinning)
-reset_all_clicked = a2.button("Reset balance and stats", use_container_width=True, disabled=st.session_state.hardcore)
-reset_stats_clicked = a3.button("Reset stats only", use_container_width=True, disabled=st.session_state.hardcore)
+spin_clicked = b1.button("Spin", use_container_width=True, disabled=not can_spin or st.session_state.auto_spinning)
+reset_all_clicked = b2.button("Reset balance and stats", use_container_width=True, disabled=st.session_state.hardcore)
+reset_stats_clicked = b3.button("Reset stats only", use_container_width=True, disabled=st.session_state.hardcore)
 
 def do_spin():
     st.session_state.queue_spin_snd = True
@@ -240,7 +245,7 @@ if reset_stats_clicked:
     reset_stats_only()
     st.rerun()
 
-# Now render reels from current state
+# Render reels now from current state
 ph1.metric("Reel 1", st.session_state.last_reels[0])
 ph2.metric("Reel 2", st.session_state.last_reels[1])
 ph3.metric("Reel 3", st.session_state.last_reels[2])
