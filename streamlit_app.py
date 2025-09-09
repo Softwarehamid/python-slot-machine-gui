@@ -34,14 +34,19 @@ def payout(reels, bet):
         return bet * 2
     return 0
 
-def audio_html(file_path: Path, muted: bool) -> str:
+def js_play_sound(file_path: Path, muted: bool, delay_ms: int = 0) -> str:
     if not file_path.exists():
         return ""
     b64 = base64.b64encode(file_path.read_bytes()).decode("utf-8")
-    return (
-        f'<audio id="snd-{uuid4()}" autoplay {"muted" if muted else ""} style="display:none">'
-        f'<source src="data:audio/wav;base64,{b64}" type="audio/wav"></audio>'
-    )
+    return f"""
+    <script>
+      setTimeout(() => {{
+        const a = new Audio("data:audio/wav;base64,{b64}");
+        a.muted = {str(muted).lower()};
+        a.play().catch(()=>{{}});
+      }}, {int(delay_ms)});
+    </script>
+    """
 
 def schedule_rerun(delay_ms: int):
     st.markdown(
@@ -69,6 +74,7 @@ def init_state():
     ss.setdefault("auto_spinning", False)
     ss.setdefault("auto_spin_remaining", 0)
     ss.setdefault("auto_delay_ms", 350)
+    ss.setdefault("mute", False)
 
 def reset_stats_only():
     st.session_state.spins = 0
@@ -111,19 +117,20 @@ def load_blob(uploaded):
 st.set_page_config(page_title="Python Slot Machine", page_icon="🎰", layout="centered")
 init_state()
 
+# Header
 col_img, col_title = st.columns([1, 2], vertical_alignment="center")
 with col_img:
     if IMG_PREVIEW.exists():
-        st.image(str(IMG_PREVIEW), use_column_width=True)
+        st.image(str(IMG_PREVIEW), use_container_width=True)
     else:
         st.caption(f"Preview not found: {IMG_PREVIEW.name}")
-
 with col_title:
     st.title("Python Slot Machine")
     st.caption("Runs in your browser with Streamlit.")
     st.caption("Session saves in memory. Download or load a save file anytime.")
     st.caption(f"Mode: {'Hardcore' if st.session_state.hardcore else 'Easy'}")
 
+# Sidebar
 with st.sidebar:
     st.header("Settings")
     prev_hard = st.session_state.hardcore
@@ -139,7 +146,7 @@ with st.sidebar:
         st.session_state.auto_spin_remaining = 0
         st.rerun()
 
-    mute = st.toggle("Mute sounds", value=False)
+    st.session_state.mute = st.toggle("Mute sounds", value=st.session_state.mute)
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
 
     st.divider()
@@ -157,18 +164,13 @@ with st.sidebar:
 
     st.divider()
     st.header("Auto spin")
-    speed = st.select_slider(
-        "Spin speed",
-        options=["Slow", "Normal", "Fast"],
-        value="Normal",
-        help="Controls delay between auto spins.",
-    )
+    speed = st.select_slider("Spin speed", options=["Slow", "Normal", "Fast"], value="Normal")
     st.session_state.auto_delay_ms = {"Slow": 900, "Normal": 350, "Fast": 120}[speed]
     auto_rounds = st.number_input("Rounds", min_value=1, max_value=100, value=10, step=1)
-    cols = st.columns(2)
-    with cols[0]:
+    s1, s2 = st.columns(2)
+    with s1:
         start_auto = st.button("Start auto spin", disabled=st.session_state.auto_spinning)
-    with cols[1]:
+    with s2:
         stop_auto = st.button("Stop auto spin", disabled=not st.session_state.auto_spinning)
     if start_auto:
         st.session_state.auto_spinning = True
@@ -188,23 +190,22 @@ with st.sidebar:
         st.success("Save loaded")
         st.rerun()
 
+# Balance and counters
 st.subheader(f"Balance: ${st.session_state.balance}")
 st.text(f"Spins: {st.session_state.spins}   Wins: {st.session_state.wins}")
 
-r1, r2, r3 = st.columns(3)
-with r1:
-    st.metric("Reel 1", st.session_state.last_reels[0])
-with r2:
-    st.metric("Reel 2", st.session_state.last_reels[1])
-with r3:
-    st.metric("Reel 3", st.session_state.last_reels[2])
+# Reels placeholders (render after handling actions)
+cols = st.columns(3)
+ph1 = cols[0].empty()
+ph2 = cols[1].empty()
+ph3 = cols[2].empty()
 
-# actions
-c1, c2, c3 = st.columns([1, 1, 1])
+# Action buttons
+a1, a2, a3 = st.columns([1, 1, 1])
 can_spin = st.session_state.balance >= bet
-spin_clicked = c1.button("Spin", use_container_width=True, disabled=not can_spin or st.session_state.auto_spinning)
-reset_all_clicked = c2.button("Reset balance and stats", use_container_width=True, disabled=st.session_state.hardcore)
-reset_stats_clicked = c3.button("Reset stats only", use_container_width=True, disabled=st.session_state.hardcore)
+spin_clicked = a1.button("Spin", use_container_width=True, disabled=not can_spin or st.session_state.auto_spinning)
+reset_all_clicked = a2.button("Reset balance and stats", use_container_width=True, disabled=st.session_state.hardcore)
+reset_stats_clicked = a3.button("Reset stats only", use_container_width=True, disabled=st.session_state.hardcore)
 
 def do_spin():
     st.session_state.queue_spin_snd = True
@@ -219,11 +220,10 @@ def do_spin():
         st.session_state.balance += win_amt
         st.session_state.queue_win_snd = True
 
-# manual spin: no immediate rerun
+# Handle actions first
 if spin_clicked and can_spin and not st.session_state.auto_spinning:
     do_spin()
 
-# auto spin engine: one spin per run, then schedule a timed rerun
 if st.session_state.auto_spinning:
     if st.session_state.auto_spin_remaining > 0 and st.session_state.balance >= bet:
         st.session_state.auto_spin_remaining -= 1
@@ -233,7 +233,6 @@ if st.session_state.auto_spinning:
         st.session_state.auto_spinning = False
         st.session_state.auto_spin_remaining = 0
 
-# resets
 if reset_all_clicked:
     reset_all()
     st.rerun()
@@ -241,22 +240,26 @@ if reset_stats_clicked:
     reset_stats_only()
     st.rerun()
 
-# status
+# Now render reels from current state
+ph1.metric("Reel 1", st.session_state.last_reels[0])
+ph2.metric("Reel 2", st.session_state.last_reels[1])
+ph3.metric("Reel 3", st.session_state.last_reels[2])
+
+# Status
 if st.session_state.spins > 0:
     if st.session_state.last_win > 0:
         st.success(f"You won ${st.session_state.last_win}")
     else:
         st.info("No win this spin")
 
-# sounds
-html_parts = []
+# Sounds every run
+snd = []
 if st.session_state.queue_spin_snd:
-    html_parts.append(audio_html(SND_SPIN, muted=st.session_state.get("mute", False)))
+    snd.append(js_play_sound(SND_SPIN, muted=st.session_state.mute, delay_ms=0))
 if st.session_state.queue_win_snd:
-    html_parts.append(audio_html(SND_WIN, muted=st.session_state.get("mute", False)))
-
-if html_parts:
-    st.markdown("\n".join(html_parts), unsafe_allow_html=True)
+    snd.append(js_play_sound(SND_WIN, muted=st.session_state.mute, delay_ms=250))
+if snd:
+    st.markdown("".join(snd), unsafe_allow_html=True)
     st.session_state.queue_spin_snd = False
     st.session_state.queue_win_snd = False
 
