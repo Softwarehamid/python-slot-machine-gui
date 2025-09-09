@@ -10,7 +10,7 @@ import streamlit as st
 BASE_DIR = Path(__file__).parent
 IMG_PREVIEW = BASE_DIR / "images" / "slot-machine-GUI.png"
 SND_SPIN = BASE_DIR / "assets" / "sound" / "spin.wav"
-SND_WIN  = BASE_DIR / "assets" / "sound" / "win.wav"
+SND_WIN  = BASE_DIR / "assets" / "sound" / "win.wav"  # kept for future use
 
 # ---------- game data ----------
 SYMBOLS = ["🍒", "🍋", "🔔", "⭐", "7️⃣"]
@@ -59,7 +59,7 @@ def init_state():
     ss.setdefault("auto_spin_remaining", 0)
     ss.setdefault("auto_delay_ms", 350)
     ss.setdefault("mute", False)
-    ss.setdefault("audio_enabled", False)
+    ss.setdefault("audio_enabled", True)  # always on, no extra button
     ss.setdefault("queue_spin", False)
     ss.setdefault("queue_win", False)
 
@@ -100,9 +100,8 @@ def load_blob(uploaded):
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
 
-# ---------- audio kernel (Web Audio API) ----------
+# ---------- Web Audio kernel with auto-unlock ----------
 def inject_audio_kernel():
-    # Embed audio as base64. If file missing, string is empty.
     spin_b64 = base64.b64encode(SND_SPIN.read_bytes()).decode("utf-8") if SND_SPIN.exists() else ""
     win_b64  = base64.b64encode(SND_WIN.read_bytes()).decode("utf-8")  if SND_WIN.exists()  else ""
 
@@ -125,45 +124,52 @@ def inject_audio_kernel():
             const ctx = new (window.AudioContext || window.webkitAudioContext)();
             const state = {{
               ctx,
-              gain: ctx.createGain(),
               spinBuf: null,
               winBuf: null,
               unlocked: false,
             }};
-            state.gain.connect(ctx.destination);
 
             async function decodeAll() {{
               try {{
                 const sAB = b64ToArrayBuffer("{spin_b64}");
                 const wAB = b64ToArrayBuffer("{win_b64}");
-                if (sAB) {{
-                  state.spinBuf = await state.ctx.decodeAudioData(sAB.slice(0));
-                }}
-                if (wAB) {{
-                  state.winBuf = await state.ctx.decodeAudioData(wAB.slice(0));
-                }}
-              }} catch (e) {{
-                // ignore decode errors
-              }}
+                if (sAB) state.spinBuf = await state.ctx.decodeAudioData(sAB.slice(0));
+                if (wAB) state.winBuf  = await state.ctx.decodeAudioData(wAB.slice(0));
+              }} catch (e) {{}}
             }}
 
-            async function ensureUnlocked() {{
+            async function unlock() {{
               try {{
-                if (state.ctx.state !== "running") {{
-                  await state.ctx.resume();
-                }}
+                if (state.ctx.state !== "running") await state.ctx.resume();
                 if (!state.unlocked) {{
-                  // do a silent tick to satisfy autoplay rules
-                  const src = state.ctx.createBufferSource();
-                  src.buffer = state.spinBuf || state.winBuf;
-                  if (src.buffer) {{
-                    src.connect(state.gain);
+                  // tiny silent tick on first user gesture
+                  const buf = state.spinBuf || state.winBuf;
+                  if (buf) {{
+                    const src = state.ctx.createBufferSource();
+                    src.buffer = buf;
+                    const g = state.ctx.createGain();
+                    g.gain.value = 0.0001;
+                    src.connect(g);
+                    g.connect(state.ctx.destination);
                     src.start(0, 0, 0.0001);
                   }}
                   state.unlocked = true;
                 }}
               }} catch (e) {{}}
             }}
+
+            function addOnce(el, type, fn) {{
+              const h = async (evt) => {{
+                await unlock();
+                el.removeEventListener(type, h, true);
+              }};
+              el.addEventListener(type, h, true);
+            }}
+
+            // Auto-unlock on first interaction, no button required
+            addOnce(window, "pointerdown", unlock);
+            addOnce(window, "keydown", unlock);
+            addOnce(document, "click", unlock);
 
             function play(kind, muted) {{
               const buf = kind === "spin" ? state.spinBuf : state.winBuf;
@@ -174,55 +180,15 @@ def inject_audio_kernel():
                 const g = state.ctx.createGain();
                 g.gain.value = muted ? 0.0 : 1.0;
                 src.connect(g);
-                g.connect(state.gain);
+                g.connect(state.ctx.destination);
                 src.start();
               }} catch (e) {{}}
             }}
 
-            topw.__slotKernelWA = {{
-              decodeAll,
-              ensureUnlocked,
-              play,
-            }};
-
-            // Start decoding once
+            topw.__slotKernelWA = {{ play }};
             decodeAll();
           }}
         }})();
-        </script>
-        """,
-        unsafe_allow_html=True,
-    )
-
-def render_audio_unlock_button():
-    st.markdown(
-        """
-        <div style="margin: 8px 0;">
-          <button id="slot-audio-unlock" style="padding:8px 12px;border-radius:8px;">
-            Tap to enable sound
-          </button>
-          <span id="slot-audio-status" style="margin-left:8px;font-size:90%;opacity:.8;"></span>
-        </div>
-        <script>
-          (function() {
-            const btn = document.getElementById("slot-audio-unlock");
-            const status = document.getElementById("slot-audio-status");
-            if (!btn) return;
-            btn.addEventListener("click", async () => {
-              try {
-                const topw = window.top || window.parent || window;
-                if (topw.__slotKernelWA) {
-                  await topw.__slotKernelWA.ensureUnlocked();
-                  status.textContent = "Sound enabled";
-                  btn.disabled = true;
-                } else {
-                  status.textContent = "Audio kernel missing";
-                }
-              } catch(e) {
-                status.textContent = "Tap again";
-              }
-            });
-          })();
         </script>
         """,
         unsafe_allow_html=True,
@@ -232,10 +198,9 @@ def js_play(kind: str, muted: bool, delay_ms: int = 0):
     st.markdown(
         f"""
         <script>
-          setTimeout(async function(){{
+          setTimeout(function(){{
             const topw = window.top || window.parent || window;
             if (topw.__slotKernelWA) {{
-              await topw.__slotKernelWA.ensureUnlocked();
               topw.__slotKernelWA.play("{kind}", {str(muted).lower()});
             }}
           }}, {int(delay_ms)});
@@ -286,10 +251,6 @@ with st.sidebar:
         st.rerun()
 
     st.session_state.mute = st.toggle("Mute sounds", value=st.session_state.mute)
-
-    if not st.session_state.audio_enabled:
-        if st.button("I turned on sound in app"):
-            st.session_state.audio_enabled = True
 
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
 
@@ -396,13 +357,9 @@ if st.session_state.spins > 0:
     else:
         st.info("No win this spin")
 
-# Audio unlock + play
-if st.session_state.audio_enabled:
-    render_audio_unlock_button()
-    if st.session_state.queue_spin:
-        js_play("spin", st.session_state.mute, delay_ms=60)
-    if st.session_state.queue_win:
-        js_play("win",  st.session_state.mute, delay_ms=220)
+# Play only the spin sound (win sound disabled)
+if st.session_state.queue_spin:
+    js_play("spin", st.session_state.mute, delay_ms=60)
 
 st.session_state.queue_spin = False
 st.session_state.queue_win  = False
