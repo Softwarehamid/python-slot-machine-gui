@@ -1,16 +1,12 @@
-# streamlit_app.py
 import random
 import json
 from io import BytesIO
 from pathlib import Path
-import base64
 import streamlit as st
 
 # ---------- paths ----------
 BASE_DIR = Path(__file__).parent
 IMG_PREVIEW = BASE_DIR / "images" / "slot-machine-GUI.png"
-SND_SPIN = BASE_DIR / "assets" / "sound" / "spin.wav"
-SND_WIN  = BASE_DIR / "assets" / "sound" / "win.wav"  # kept for future use
 
 # ---------- game data ----------
 SYMBOLS = ["🍒", "🍋", "🔔", "⭐", "7️⃣"]
@@ -58,10 +54,6 @@ def init_state():
     ss.setdefault("auto_spinning", False)
     ss.setdefault("auto_spin_remaining", 0)
     ss.setdefault("auto_delay_ms", 350)
-    ss.setdefault("mute", False)
-    ss.setdefault("audio_enabled", True)  # always on, no extra button
-    ss.setdefault("queue_spin", False)
-    ss.setdefault("queue_win", False)
 
 def reset_stats_only():
     st.session_state.spins = 0
@@ -73,8 +65,6 @@ def reset_all():
     reset_stats_only()
     st.session_state.balance = 100
     st.session_state.total_deposited = 0
-    st.session_state.queue_spin = False
-    st.session_state.queue_win = False
 
 def save_blob():
     data = {
@@ -100,119 +90,9 @@ def load_blob(uploaded):
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
 
-# ---------- Web Audio kernel with auto-unlock ----------
-def inject_audio_kernel():
-    spin_b64 = base64.b64encode(SND_SPIN.read_bytes()).decode("utf-8") if SND_SPIN.exists() else ""
-    win_b64  = base64.b64encode(SND_WIN.read_bytes()).decode("utf-8")  if SND_WIN.exists()  else ""
-
-    st.markdown(
-        f"""
-        <script>
-        (function() {{
-          const topw = window.top || window.parent || window;
-
-          function b64ToArrayBuffer(b64) {{
-            if (!b64) return null;
-            const bin = atob(b64);
-            const len = bin.length;
-            const bytes = new Uint8Array(len);
-            for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
-            return bytes.buffer;
-          }}
-
-          if (!topw.__slotKernelWA) {{
-            const ctx = new (window.AudioContext || window.webkitAudioContext)();
-            const state = {{
-              ctx,
-              spinBuf: null,
-              winBuf: null,
-              unlocked: false,
-            }};
-
-            async function decodeAll() {{
-              try {{
-                const sAB = b64ToArrayBuffer("{spin_b64}");
-                const wAB = b64ToArrayBuffer("{win_b64}");
-                if (sAB) state.spinBuf = await state.ctx.decodeAudioData(sAB.slice(0));
-                if (wAB) state.winBuf  = await state.ctx.decodeAudioData(wAB.slice(0));
-              }} catch (e) {{}}
-            }}
-
-            async function unlock() {{
-              try {{
-                if (state.ctx.state !== "running") await state.ctx.resume();
-                if (!state.unlocked) {{
-                  // tiny silent tick on first user gesture
-                  const buf = state.spinBuf || state.winBuf;
-                  if (buf) {{
-                    const src = state.ctx.createBufferSource();
-                    src.buffer = buf;
-                    const g = state.ctx.createGain();
-                    g.gain.value = 0.0001;
-                    src.connect(g);
-                    g.connect(state.ctx.destination);
-                    src.start(0, 0, 0.0001);
-                  }}
-                  state.unlocked = true;
-                }}
-              }} catch (e) {{}}
-            }}
-
-            function addOnce(el, type, fn) {{
-              const h = async (evt) => {{
-                await unlock();
-                el.removeEventListener(type, h, true);
-              }};
-              el.addEventListener(type, h, true);
-            }}
-
-            // Auto-unlock on first interaction, no button required
-            addOnce(window, "pointerdown", unlock);
-            addOnce(window, "keydown", unlock);
-            addOnce(document, "click", unlock);
-
-            function play(kind, muted) {{
-              const buf = kind === "spin" ? state.spinBuf : state.winBuf;
-              if (!buf) return;
-              try {{
-                const src = state.ctx.createBufferSource();
-                src.buffer = buf;
-                const g = state.ctx.createGain();
-                g.gain.value = muted ? 0.0 : 1.0;
-                src.connect(g);
-                g.connect(state.ctx.destination);
-                src.start();
-              }} catch (e) {{}}
-            }}
-
-            topw.__slotKernelWA = {{ play }};
-            decodeAll();
-          }}
-        }})();
-        </script>
-        """,
-        unsafe_allow_html=True,
-    )
-
-def js_play(kind: str, muted: bool, delay_ms: int = 0):
-    st.markdown(
-        f"""
-        <script>
-          setTimeout(function(){{
-            const topw = window.top || window.parent || window;
-            if (topw.__slotKernelWA) {{
-              topw.__slotKernelWA.play("{kind}", {str(muted).lower()});
-            }}
-          }}, {int(delay_ms)});
-        </script>
-        """,
-        unsafe_allow_html=True,
-    )
-
 # ---------- UI ----------
 st.set_page_config(page_title="Python Slot Machine", page_icon="🎰", layout="centered")
 init_state()
-inject_audio_kernel()
 
 # Header
 col_img, col_title = st.columns([1, 2])
@@ -230,10 +110,6 @@ with col_title:
     st.caption("Session saves in memory. Download or load a save file anytime.")
     st.caption(f"Mode: {'Hardcore' if st.session_state.hardcore else 'Easy'}")
 
-# Quick audio asset status
-st.caption(f"spin.wav found: {SND_SPIN.exists()}")
-st.caption(f"win.wav found: {SND_WIN.exists()}")
-
 # Sidebar
 with st.sidebar:
     st.header("Settings")
@@ -249,8 +125,6 @@ with st.sidebar:
         st.session_state.auto_spinning = False
         st.session_state.auto_spin_remaining = 0
         st.rerun()
-
-    st.session_state.mute = st.toggle("Mute sounds", value=st.session_state.mute)
 
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
 
@@ -311,7 +185,6 @@ reset_all_clicked   = b2.button("Reset balance and stats", use_container_width=T
 reset_stats_clicked = b3.button("Reset stats only", use_container_width=True, disabled=st.session_state.hardcore)
 
 def do_spin():
-    st.session_state.queue_spin = True
     st.session_state.balance -= bet
     reels = spin_reels()
     st.session_state.last_reels = reels
@@ -321,7 +194,6 @@ def do_spin():
     if win_amt > 0:
         st.session_state.wins += 1
         st.session_state.balance += win_amt
-        st.session_state.queue_win = True
 
 # Actions
 if spin_clicked and can_spin and not st.session_state.auto_spinning:
@@ -356,12 +228,5 @@ if st.session_state.spins > 0:
         st.success(f"You won ${st.session_state.last_win}")
     else:
         st.info("No win this spin")
-
-# Play only the spin sound (win sound disabled)
-if st.session_state.queue_spin:
-    js_play("spin", st.session_state.mute, delay_ms=60)
-
-st.session_state.queue_spin = False
-st.session_state.queue_win  = False
 
 st.caption("Symbols: 🍒 🍋 🔔 ⭐ 7️⃣")
