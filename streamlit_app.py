@@ -1,18 +1,15 @@
-# streamlit_app.py
 import random
 import json
-import base64
 from io import BytesIO
-from uuid import uuid4
 from pathlib import Path
+import base64
 import streamlit as st
-from streamlit import components
 
 # ---------- paths ----------
 BASE_DIR = Path(__file__).parent
+IMG_PREVIEW = BASE_DIR / "images" / "slot-machine-GUI.png"
 SND_SPIN = BASE_DIR / "assets" / "sound" / "spin.wav"
 SND_WIN  = BASE_DIR / "assets" / "sound" / "win.wav"
-IMG_PREVIEW = BASE_DIR / "images" / "slot-machine-GUI.png"
 
 # ---------- game data ----------
 SYMBOLS = ["🍒", "🍋", "🔔", "⭐", "7️⃣"]
@@ -41,7 +38,7 @@ def schedule_rerun(delay_ms: int):
         f"""
         <script>
           setTimeout(() => {{
-            window.parent.postMessage({{type: "streamlit:rerun"}}, "*");
+            (window.parent || window).postMessage({{type: "streamlit:rerun"}}, "*");
           }}, {int(delay_ms)});
         </script>
         """,
@@ -61,7 +58,6 @@ def init_state():
     ss.setdefault("auto_spin_remaining", 0)
     ss.setdefault("auto_delay_ms", 350)
     ss.setdefault("mute", False)
-    ss.setdefault("audio_mounted", False)
     ss.setdefault("queue_spin", False)
     ss.setdefault("queue_win", False)
 
@@ -102,52 +98,43 @@ def load_blob(uploaded):
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
 
-def mount_audio_bridge():
-    """Create a persistent, hidden component that plays sounds on demand."""
-    if st.session_state.audio_mounted:
-        return
+# ---------- audio kernel ----------
+def inject_audio_kernel():
     spin_b64 = base64.b64encode(SND_SPIN.read_bytes()).decode("utf-8") if SND_SPIN.exists() else ""
     win_b64  = base64.b64encode(SND_WIN.read_bytes()).decode("utf-8")  if SND_WIN.exists()  else ""
-    components.v1.html(
-        f"""
-        <script>
-        (function() {{
-          const SPIN_URL = "data:audio/wav;base64,{spin_b64}";
-          const WIN_URL  = "data:audio/wav;base64,{win_b64}";
-          window._spinSnd = new Audio(SPIN_URL);
-          window._winSnd  = new Audio(WIN_URL);
-          window._spinSnd.preload = "auto";
-          window._winSnd.preload  = "auto";
-          window.addEventListener("message", (ev) => {{
-            const d = ev.data || {{}};
-            if (d.type === "PLAY_SPIN") {{
-              try {{
-                window._spinSnd.muted = !!d.muted;
-                window._spinSnd.currentTime = 0;
-                window._spinSnd.play().catch(()=>{{}});
-              }} catch(e) {{}}
-            }}
-            if (d.type === "PLAY_WIN") {{
-              try {{
-                window._winSnd.muted = !!d.muted;
-                window._winSnd.currentTime = 0;
-                window._winSnd.play().catch(()=>{{}});
-              }} catch(e) {{}}
-            }}
-          }});
-        }})();
-        </script>
-        """,
-        height=0,
-    )
-    st.session_state.audio_mounted = True
-
-def post_play(kind: str, muted: bool, delay_ms: int = 0):
     st.markdown(
         f"""
         <script>
-          setTimeout(() => {{
-            window.postMessage({{type: "{kind}", muted: {str(muted).lower()}}}, "*");
+        (function() {{
+          const topw = window.top || window.parent || window;
+          if (!topw.__slotAudio) {{
+            const spin = new Audio("data:audio/wav;base64,{spin_b64}");
+            const win  = new Audio("data:audio/wav;base64,{win_b64}");
+            spin.preload = "auto"; win.preload = "auto";
+            topw.__slotAudio = {{
+              play: function(kind, muted) {{
+                try {{
+                  const a = (kind === "spin") ? spin : win;
+                  a.muted = !!muted;
+                  a.currentTime = 0;
+                  a.play().catch(()=>{{}});
+                }} catch (e) {{}}
+              }}
+            }};
+          }}
+        }})();
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
+
+def play_js(kind: str, muted: bool, delay_ms: int = 0):
+    st.markdown(
+        f"""
+        <script>
+          setTimeout(function() {{
+            var topw = window.top || window.parent || window;
+            if (topw.__slotAudio) topw.__slotAudio.play("{kind}", {str(muted).lower()});
           }}, {int(delay_ms)});
         </script>
         """,
@@ -157,7 +144,7 @@ def post_play(kind: str, muted: bool, delay_ms: int = 0):
 # ---------- UI ----------
 st.set_page_config(page_title="Python Slot Machine", page_icon="🎰", layout="centered")
 init_state()
-mount_audio_bridge()
+inject_audio_kernel()
 
 # Header
 col_img, col_title = st.columns([1, 2], vertical_alignment="center")
@@ -263,7 +250,7 @@ def do_spin():
         st.session_state.balance += win_amt
         st.session_state.queue_win = True
 
-# Handle actions
+# Actions
 if spin_clicked and can_spin and not st.session_state.auto_spinning:
     do_spin()
 
@@ -283,26 +270,9 @@ if reset_stats_clicked:
     reset_stats_only()
     st.rerun()
 
-# Render current state
+# Render
 ph_balance.subheader(f"Balance: ${st.session_state.balance}")
 ph_stats.text(f"Spins: {st.session_state.spins}   Wins: {st.session_state.wins}")
 ph_r1.metric("Reel 1", st.session_state.last_reels[0])
 ph_r2.metric("Reel 2", st.session_state.last_reels[1])
-ph_r3.metric("Reel 3", st.session_state.last_reels[2])
-
-# Status
-if st.session_state.spins > 0:
-    if st.session_state.last_win > 0:
-        st.success(f"You won ${st.session_state.last_win}")
-    else:
-        st.info("No win this spin")
-
-# Sounds via persistent audio bridge
-if st.session_state.queue_spin:
-    post_play("PLAY_SPIN", muted=st.session_state.mute, delay_ms=80)
-if st.session_state.queue_win:
-    post_play("PLAY_WIN",  muted=st.session_state.mute, delay_ms=250)
-st.session_state.queue_spin = False
-st.session_state.queue_win  = False
-
-st.caption("Symbols: 🍒 🍋 🔔 ⭐ 7️⃣")
+ph_r3.metric("Reel 3", st.session_state.las
