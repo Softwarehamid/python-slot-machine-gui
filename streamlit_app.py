@@ -36,23 +36,30 @@ def payout(reels, bet):
     return 0
 
 def audio_snippet(file_path: Path, muted: bool, delay_ms: int = 0) -> str:
+    """
+    Force a fresh DOM node each time so the sound plays on every spin.
+    Use both <audio autoplay> and JS Audio().play() for reliability.
+    """
     if not file_path.exists():
         return ""
     b64 = base64.b64encode(file_path.read_bytes()).decode("utf-8")
-    # Use both <audio autoplay> and JS Audio() to improve autoplay reliability
+    uid = str(uuid4()).replace("-", "")
+    data_url = f"data:audio/wav;base64,{b64}#{uid}"  # unique fragment busts diff caching
     return f"""
-    <audio autoplay style="display:none">
-      <source src="data:audio/wav;base64,{b64}" type="audio/wav">
-    </audio>
-    <script>
-      setTimeout(() => {{
-        try {{
-          const a = new Audio("data:audio/wav;base64,{b64}");
-          a.muted = {str(muted).lower()};
-          a.play().catch(()=>{{}});
-        }} catch(e) {{}}
-      }}, {int(delay_ms)});
-    </script>
+    <div id="snd-wrap-{uid}">
+      <audio id="snd-aud-{uid}" autoplay style="display:none">
+        <source src="{data_url}" type="audio/wav">
+      </audio>
+      <script>
+        setTimeout(() => {{
+          try {{
+            const a = new Audio("{data_url}");
+            a.muted = {str(muted).lower()};
+            a.play().catch(()=>{{}});
+          }} catch(e) {{}}
+        }}, {int(delay_ms)});
+      </script>
+    </div>
     """
 
 def schedule_rerun(delay_ms: int):
@@ -249,7 +256,7 @@ if reset_stats_clicked:
     reset_stats_only()
     st.rerun()
 
-# Render with current state (updates on first click now)
+# Render with current state
 ph_balance.subheader(f"Balance: ${st.session_state.balance}")
 ph_stats.text(f"Spins: {st.session_state.spins}   Wins: {st.session_state.wins}")
 
@@ -266,10 +273,11 @@ if st.session_state.spins > 0:
 
 # Sounds every spin
 snippets = []
+# tiny delay on spin sound helps avoid click-timing race
 if st.session_state.queue_spin_snd:
-    snippets.append(audio_snippet(SND_SPIN, muted=st.session_state.mute, delay_ms=0))
+    snippets.append(audio_snippet(SND_SPIN, muted=st.session_state.mute, delay_ms=120))
 if st.session_state.queue_win_snd:
-    snippets.append(audio_snippet(SND_WIN, muted=st.session_state.mute, delay_ms=250))
+    snippets.append(audio_snippet(SND_WIN, muted=st.session_state.mute, delay_ms=300))
 if snippets:
     st.markdown("".join(snippets), unsafe_allow_html=True)
     st.session_state.queue_spin_snd = False
