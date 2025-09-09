@@ -53,19 +53,18 @@ def init_state():
     ss.setdefault("last_reels", ["❔", "❔", "❔"])
     ss.setdefault("last_win", 0)
     ss.setdefault("total_deposited", 0)
-    # flags for queued sounds and flow
     ss.setdefault("queue_spin_snd", False)
     ss.setdefault("queue_win_snd", False)
 
-def reset_stats():
-    if st.session_state.hardcore:
-        st.warning("Hardcore mode on. Reset disabled.")
-        return
-    st.session_state.balance = 100
+def reset_stats_only():
     st.session_state.spins = 0
     st.session_state.wins = 0
     st.session_state.last_reels = ["❔", "❔", "❔"]
     st.session_state.last_win = 0
+
+def reset_all():
+    reset_stats_only()
+    st.session_state.balance = 100
     st.session_state.total_deposited = 0
     st.session_state.queue_spin_snd = False
     st.session_state.queue_win_snd = False
@@ -112,7 +111,7 @@ with st.sidebar:
     st.session_state.hardcore = st.toggle(
         "Hardcore mode",
         value=st.session_state.hardcore,
-        help="Disables reset while on.",
+        help="Disables all reset actions.",
     )
     mute = st.toggle("Mute sounds", value=False)
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
@@ -145,13 +144,24 @@ with r2:
 with r3:
     st.metric("Reel 3", st.session_state.last_reels[2])
 
-left, right = st.columns(2)
+# actions
+c1, c2, c3 = st.columns([1, 1, 1])
 can_spin = st.session_state.balance >= bet
-spin_clicked = left.button("Spin", use_container_width=True, disabled=not can_spin)
 
-# ----- spin action -----
+spin_clicked = c1.button("Spin", use_container_width=True, disabled=not can_spin)
+reset_all_clicked = c2.button(
+    "Reset balance and stats",
+    use_container_width=True,
+    disabled=st.session_state.hardcore,
+)
+reset_stats_clicked = c3.button(
+    "Reset stats only",
+    use_container_width=True,
+    disabled=st.session_state.hardcore,
+)
+
+# spin
 if spin_clicked and can_spin:
-    # set results and queue sounds, then force a rerun so UI updates immediately
     st.session_state.queue_spin_snd = True
     st.session_state.balance -= bet
     reels = spin_reels()
@@ -165,38 +175,30 @@ if spin_clicked and can_spin:
         st.session_state.queue_win_snd = True
     st.rerun()
 
-if right.button("Reset balance and stats", use_container_width=True):
-    reset_stats()
+# resets
+if reset_all_clicked:
+    reset_all()
+    st.rerun()
 
-# status message
+if reset_stats_clicked:
+    reset_stats_only()
+    st.rerun()
+
+# status
 if st.session_state.last_win > 0:
     st.success(f"You won ${st.session_state.last_win}")
 else:
     st.info("No win this spin")
 
-# ----- play any queued sounds at the end of the run -----
+# sounds
 html_parts = []
 if st.session_state.queue_spin_snd:
     html_parts.append(audio_html(SND_SPIN, muted=mute))
 if st.session_state.queue_win_snd:
-    # slight gap after spin so you can hear both
-    if SND_WIN.exists():
-        b64 = base64.b64encode(SND_WIN.read_bytes()).decode("utf-8")
-        html_parts.append(
-            f"""
-            <script>
-              setTimeout(() => {{
-                const a = new Audio("data:audio/wav;base64,{b64}");
-                a.muted = {str(mute).lower()};
-                a.play().catch(()=>{{}});
-              }}, 250);
-            </script>
-            """
-        )
+    html_parts.append(audio_html(SND_WIN, muted=mute))
 
 if html_parts:
     st.markdown("\n".join(html_parts), unsafe_allow_html=True)
-    # clear flags so they fire again on next spin
     st.session_state.queue_spin_snd = False
     st.session_state.queue_win_snd = False
 
