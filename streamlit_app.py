@@ -60,6 +60,7 @@ def init_state():
     ss.setdefault("auto_spin_remaining", 0)
     ss.setdefault("auto_delay_ms", 350)
     ss.setdefault("mute", False)
+    ss.setdefault("audio_enabled", False)
     ss.setdefault("queue_spin", False)
     ss.setdefault("queue_win", False)
 
@@ -100,68 +101,75 @@ def load_blob(uploaded):
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
 
-# ---------- audio kernel ----------
-def inject_audio_kernel():
+# ---------- audio component (persistent via fixed key) ----------
+def mount_audio_component():
     spin_b64 = base64.b64encode(SND_SPIN.read_bytes()).decode("utf-8") if SND_SPIN.exists() else ""
     win_b64  = base64.b64encode(SND_WIN.read_bytes()).decode("utf-8")  if SND_WIN.exists()  else ""
-
-    # One hidden component per session. Lives outside reruns.
     components.html(
         f"""
+        <div id="audio-kernel"></div>
         <script>
         (function() {{
-          const topw = window.top || window.parent || window;
-          if (!topw.__slotAudio) {{
-            const spin = "{spin_b64}" ? new Audio("data:audio/wav;base64,{spin_b64}") : null;
-            const win  = "{win_b64}"  ? new Audio("data:audio/wav;base64,{win_b64}")  : null;
-            if (spin) spin.preload = "auto";
-            if (win)  win.preload  = "auto";
+          // keep this iframe alive (same key), register once
+          if (window.__slotKernelReady) return;
+          window.__slotKernelReady = true;
 
-            // unlock on first user click
-            const unlock = () => {{
-              try {{
-                if (spin) {{ spin.muted=true; spin.play().then(()=>{{spin.pause(); spin.currentTime=0; spin.muted=false;}}).catch(()=>{{}}); }}
-                if (win)  {{ win.muted=true;  win.play().then(()=>{{ win.pause();  win.currentTime=0;  win.muted=false; }}).catch(()=>{{}}); }}
-              }} catch (e) {{}}
-              window.removeEventListener('click', unlock, true);
-            }};
-            window.addEventListener('click', unlock, true);
+          let spin = null, win = null, ready = false;
 
-            topw.__slotAudio = {{
-              play: function(kind, muted) {{
-                try {{
-                  const a = (kind === "spin") ? spin : win;
-                  if (!a) return;
-                  a.muted = !!muted;
-                  a.currentTime = 0;
-                  a.play().catch(()=>{{}});
-                }} catch (e) {{}}
-              }}
-            }};
+          function ensure() {{
+            if (ready) return;
+            if ("{spin_b64}") {{
+              spin = new Audio("data:audio/wav;base64,{spin_b64}");
+              spin.preload = "auto";
+            }}
+            if ("{win_b64}") {{
+              win  = new Audio("data:audio/wav;base64,{win_b64}");
+              win.preload  = "auto";
+            }}
+            ready = true;
           }}
+
+          function unlock() {{
+            ensure();
+            const kick = a => a && a.play().then(() => {{
+              a.pause(); a.currentTime = 0;
+            }}).catch(()=>{{}});
+            kick(spin); kick(win);
+          }}
+
+          // Listen for messages from the app
+          window.addEventListener("message", (ev) => {{
+            const d = ev.data || {{}};
+            if (!d || !d.__slot) return;
+            ensure();
+            if (d.cmd === "enable") {{
+              unlock();
+              return;
+            }}
+            if (d.cmd === "play") {{
+              const a = d.name === "spin" ? spin : win;
+              if (!a) return;
+              a.muted = !!d.muted;
+              a.currentTime = 0;
+              a.play().catch(()=>{{}});
+            }}
+          }}, false);
         }})();
         </script>
         """,
         height=0,
+        key="audio-kernel",  # important: keeps the iframe instance alive across reruns
     )
 
-def play_js(kind: str, muted: bool, delay_ms: int = 0):
-    st.markdown(
-        f"""
-        <script>
-          setTimeout(function() {{
-            var topw = window.top || window.parent || window;
-            if (topw.__slotAudio) topw.__slotAudio.play("{kind}", {str(muted).lower()});
-          }}, {int(delay_ms)});
-        </script>
-        """,
-        unsafe_allow_html=True,
-    )
+def post_to_kernel(payload: dict):
+    # send a message this run; the persistent iframe listens and plays audio
+    js = json.dumps({"__slot": True, **payload})
+    st.markdown(f"<script>window.postMessage({js}, '*');</script>", unsafe_allow_html=True)
 
 # ---------- UI ----------
 st.set_page_config(page_title="Python Slot Machine", page_icon="🎰", layout="centered")
 init_state()
-inject_audio_kernel()
+mount_audio_component()
 
 # Header
 col_img, col_title = st.columns([1, 2], vertical_alignment="center")
@@ -195,7 +203,13 @@ with st.sidebar:
         st.session_state.auto_spin_remaining = 0
         st.rerun()
 
+    # sound controls
     st.session_state.mute = st.toggle("Mute sounds", value=st.session_state.mute)
+    if not st.session_state.audio_enabled:
+        if st.button("Enable sound"):
+            st.session_state.audio_enabled = True
+            post_to_kernel({"cmd": "enable"})
+
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
 
     st.divider()
@@ -301,12 +315,13 @@ if st.session_state.spins > 0:
     else:
         st.info("No win this spin")
 
-# Sound triggers
-# spin sound tries to play; win sound should always fire after first click unlock
-if st.session_state.queue_spin:
-    play_js("spin", st.session_state.mute, delay_ms=80)
-if st.session_state.queue_win:
-    play_js("win",  st.session_state.mute, delay_ms=250)
+# Sound triggers (works after “Enable sound” once)
+if st.session_state.audio_enabled:
+    if st.session_state.queue_spin:
+        post_to_kernel({"cmd": "play", "name": "spin", "muted": st.session_state.mute})
+    if st.session_state.queue_win:
+        post_to_kernel({"cmd": "play", "name": "win", "muted": st.session_state.mute})
+
 st.session_state.queue_spin = False
 st.session_state.queue_win  = False
 
