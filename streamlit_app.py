@@ -197,10 +197,14 @@ init_state()
 inject_audio_kernel()
 
 # Header
-col_img, col_title = st.columns([1, 2], vertical_alignment="center")
+col_img, col_title = st.columns([1, 2])
 with col_img:
     if IMG_PREVIEW.exists():
-        st.image(str(IMG_PREVIEW), use_container_width=True)
+        try:
+            st.image(str(IMG_PREVIEW), use_container_width=True)
+        except TypeError:
+            # Older Streamlit versions
+            st.image(str(IMG_PREVIEW), use_column_width=True)
     else:
         st.caption(f"Preview not found: {IMG_PREVIEW.name}")
 with col_title:
@@ -217,7 +221,11 @@ st.caption(f"win.wav found: {SND_WIN.exists()}")
 with st.sidebar:
     st.header("Settings")
     prev_hard = st.session_state.hardcore
-    st.session_state.hardcore = st.toggle("Hardcore mode", value=st.session_state.hardcore)
+    st.session_state.hardcore = st.toggle(
+        "Hardcore mode",
+        value=st.session_state.hardcore,
+        help="Disables funding and resets, forces balance to 100.",
+    )
     if st.session_state.hardcore and not prev_hard:
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
