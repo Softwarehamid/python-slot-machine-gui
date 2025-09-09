@@ -92,7 +92,7 @@ def load_blob(uploaded):
     st.session_state.wins = int(data.get("wins", 0))
     st.session_state.hardcore = bool(data.get("hardcore", False))
     st.session_state.total_deposited = int(data.get("total_deposited", 0))
-    # enforce Hardcore rules on load
+    # enforce Hardcore on load
     if st.session_state.hardcore:
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
@@ -122,7 +122,6 @@ with st.sidebar:
         value=st.session_state.hardcore,
         help="Disables funding and resets, forces balance to 100.",
     )
-    # on switching to Hardcore, enforce rules right away
     if st.session_state.hardcore and not prev_hard:
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
@@ -150,9 +149,14 @@ with st.sidebar:
     st.header("Auto spin")
     auto_rounds = st.number_input("Rounds", min_value=1, max_value=100, value=10, step=1)
     start_auto = st.button("Start auto spin", disabled=st.session_state.auto_spinning)
+    stop_auto = st.button("Stop auto spin", disabled=not st.session_state.auto_spinning)
     if start_auto:
         st.session_state.auto_spinning = True
         st.session_state.auto_spin_remaining = int(auto_rounds)
+        st.rerun()
+    if stop_auto:
+        st.session_state.auto_spinning = False
+        st.session_state.auto_spin_remaining = 0
         st.rerun()
 
     st.divider()
@@ -179,16 +183,8 @@ with r3:
 c1, c2, c3 = st.columns([1, 1, 1])
 can_spin = st.session_state.balance >= bet
 spin_clicked = c1.button("Spin", use_container_width=True, disabled=not can_spin or st.session_state.auto_spinning)
-reset_all_clicked = c2.button(
-    "Reset balance and stats",
-    use_container_width=True,
-    disabled=st.session_state.hardcore,
-)
-reset_stats_clicked = c3.button(
-    "Reset stats only",
-    use_container_width=True,
-    disabled=st.session_state.hardcore,
-)
+reset_all_clicked = c2.button("Reset balance and stats", use_container_width=True, disabled=st.session_state.hardcore)
+reset_stats_clicked = c3.button("Reset stats only", use_container_width=True, disabled=st.session_state.hardcore)
 
 def do_spin():
     st.session_state.queue_spin_snd = True
@@ -217,6 +213,7 @@ if st.session_state.auto_spinning:
     else:
         st.session_state.auto_spinning = False
         st.session_state.auto_spin_remaining = 0
+        st.rerun()
 
 # resets
 if reset_all_clicked:
