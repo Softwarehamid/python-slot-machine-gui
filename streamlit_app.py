@@ -35,16 +35,22 @@ def payout(reels, bet):
         return bet * 2
     return 0
 
-def js_play_sound(file_path: Path, muted: bool, delay_ms: int = 0) -> str:
+def audio_snippet(file_path: Path, muted: bool, delay_ms: int = 0) -> str:
     if not file_path.exists():
         return ""
     b64 = base64.b64encode(file_path.read_bytes()).decode("utf-8")
+    # Use both <audio autoplay> and JS Audio() to improve autoplay reliability
     return f"""
+    <audio autoplay style="display:none">
+      <source src="data:audio/wav;base64,{b64}" type="audio/wav">
+    </audio>
     <script>
       setTimeout(() => {{
-        const a = new Audio("data:audio/wav;base64,{b64}");
-        a.muted = {str(muted).lower()};
-        a.play().catch(()=>{{}});
+        try {{
+          const a = new Audio("data:audio/wav;base64,{b64}");
+          a.muted = {str(muted).lower()};
+          a.play().catch(()=>{{}});
+        }} catch(e) {{}}
       }}, {int(delay_ms)});
     </script>
     """
@@ -122,7 +128,6 @@ init_state()
 col_img, col_title = st.columns([1, 2], vertical_alignment="center")
 with col_img:
     if IMG_PREVIEW.exists():
-        # Cross-version support: use_container_width (new) -> fallback to use_column_width (old)
         try:
             st.image(str(IMG_PREVIEW), use_container_width=True)
         except TypeError:
@@ -195,21 +200,20 @@ with st.sidebar:
         st.success("Save loaded")
         st.rerun()
 
-# Balance and counters
-st.subheader(f"Balance: ${st.session_state.balance}")
-st.text(f"Spins: {st.session_state.spins}   Wins: {st.session_state.wins}")
+# Placeholders for stats and reels, then handle actions, then render
+ph_balance = st.empty()
+ph_stats   = st.empty()
 
-# Reels placeholders
-cols = st.columns(3)
-ph1 = cols[0].empty()
-ph2 = cols[1].empty()
-ph3 = cols[2].empty()
+reel_cols = st.columns(3)
+ph_r1 = reel_cols[0].empty()
+ph_r2 = reel_cols[1].empty()
+ph_r3 = reel_cols[2].empty()
 
 # Buttons
 b1, b2, b3 = st.columns([1, 1, 1])
 can_spin = st.session_state.balance >= bet
 spin_clicked = b1.button("Spin", use_container_width=True, disabled=not can_spin or st.session_state.auto_spinning)
-reset_all_clicked = b2.button("Reset balance and stats", use_container_width=True, disabled=st.session_state.hardcore)
+reset_all_clicked   = b2.button("Reset balance and stats", use_container_width=True, disabled=st.session_state.hardcore)
 reset_stats_clicked = b3.button("Reset stats only", use_container_width=True, disabled=st.session_state.hardcore)
 
 def do_spin():
@@ -245,10 +249,13 @@ if reset_stats_clicked:
     reset_stats_only()
     st.rerun()
 
-# Render reels now from current state
-ph1.metric("Reel 1", st.session_state.last_reels[0])
-ph2.metric("Reel 2", st.session_state.last_reels[1])
-ph3.metric("Reel 3", st.session_state.last_reels[2])
+# Render with current state (updates on first click now)
+ph_balance.subheader(f"Balance: ${st.session_state.balance}")
+ph_stats.text(f"Spins: {st.session_state.spins}   Wins: {st.session_state.wins}")
+
+ph_r1.metric("Reel 1", st.session_state.last_reels[0])
+ph_r2.metric("Reel 2", st.session_state.last_reels[1])
+ph_r3.metric("Reel 3", st.session_state.last_reels[2])
 
 # Status
 if st.session_state.spins > 0:
@@ -257,14 +264,14 @@ if st.session_state.spins > 0:
     else:
         st.info("No win this spin")
 
-# Sounds every run
-snd = []
+# Sounds every spin
+snippets = []
 if st.session_state.queue_spin_snd:
-    snd.append(js_play_sound(SND_SPIN, muted=st.session_state.mute, delay_ms=0))
+    snippets.append(audio_snippet(SND_SPIN, muted=st.session_state.mute, delay_ms=0))
 if st.session_state.queue_win_snd:
-    snd.append(js_play_sound(SND_WIN, muted=st.session_state.mute, delay_ms=250))
-if snd:
-    st.markdown("".join(snd), unsafe_allow_html=True)
+    snippets.append(audio_snippet(SND_WIN, muted=st.session_state.mute, delay_ms=250))
+if snippets:
+    st.markdown("".join(snippets), unsafe_allow_html=True)
     st.session_state.queue_spin_snd = False
     st.session_state.queue_win_snd = False
 
