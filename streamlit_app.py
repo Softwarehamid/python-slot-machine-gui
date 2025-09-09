@@ -1,4 +1,3 @@
-# streamlit_app.py
 import random
 import json
 from io import BytesIO
@@ -100,7 +99,7 @@ def load_blob(uploaded):
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
 
-# ---------- audio kernel (no components) ----------
+# ---------- audio kernel ----------
 def inject_audio_kernel():
     spin_b64 = base64.b64encode(SND_SPIN.read_bytes()).decode("utf-8") if SND_SPIN.exists() else ""
     win_b64  = base64.b64encode(SND_WIN.read_bytes()).decode("utf-8")  if SND_WIN.exists()  else ""
@@ -118,16 +117,24 @@ def inject_audio_kernel():
             if (win)  win.preload  = "auto";
 
             topw.__slotKernel = {{
-              enable: function() {{
-                const kick = (a) => a && a.play().then(() => {{ a.pause(); a.currentTime = 0; }}).catch(()=>{{}});
-                kick(spin); kick(win);
+              enable: async function() {{
+                const kick = async (a) => {{
+                  if (!a) return;
+                  try {{
+                    await a.play();
+                    a.pause();
+                    a.currentTime = 0;
+                  }} catch (e) {{}}
+                }};
+                await kick(spin);
+                await kick(win);
               }},
               play: function(kind, muted) {{
                 const a = (kind === "spin") ? spin : win;
                 if (!a) return;
                 a.muted = !!muted;
                 a.currentTime = 0;
-                a.play().catch(()=>{{}});
+                a.play().catch(() => {{}});
               }}
             }};
           }}
@@ -137,13 +144,34 @@ def inject_audio_kernel():
         unsafe_allow_html=True,
     )
 
-def js_enable_sound():
+def render_audio_unlock_button():
     st.markdown(
         """
+        <div style="margin: 8px 0;">
+          <button id="slot-audio-unlock" style="padding:8px 12px;border-radius:8px;">
+            Tap to enable sound
+          </button>
+          <span id="slot-audio-status" style="margin-left:8px;font-size:90%;opacity:.8;"></span>
+        </div>
         <script>
-          (function(){
-            const topw = window.top || window.parent || window;
-            if (topw.__slotKernel) topw.__slotKernel.enable();
+          (function() {
+            const btn = document.getElementById("slot-audio-unlock");
+            const status = document.getElementById("slot-audio-status");
+            if (!btn) return;
+            btn.addEventListener("click", async () => {
+              try {
+                const topw = window.top || window.parent || window;
+                if (topw.__slotKernel && typeof topw.__slotKernel.enable === "function") {
+                  await topw.__slotKernel.enable();
+                  status.textContent = "Sound enabled";
+                  btn.disabled = true;
+                } else {
+                  status.textContent = "Audio kernel missing";
+                }
+              } catch(e) {
+                status.textContent = "Tap again";
+              }
+            });
           })();
         </script>
         """,
@@ -172,10 +200,7 @@ inject_audio_kernel()
 col_img, col_title = st.columns([1, 2], vertical_alignment="center")
 with col_img:
     if IMG_PREVIEW.exists():
-        try:
-            st.image(str(IMG_PREVIEW), use_container_width=True)
-        except TypeError:
-            st.image(str(IMG_PREVIEW), use_column_width=True)
+        st.image(str(IMG_PREVIEW), use_container_width=True)
     else:
         st.caption(f"Preview not found: {IMG_PREVIEW.name}")
 with col_title:
@@ -184,15 +209,15 @@ with col_title:
     st.caption("Session saves in memory. Download or load a save file anytime.")
     st.caption(f"Mode: {'Hardcore' if st.session_state.hardcore else 'Easy'}")
 
+# Debug audio assets
+st.caption(f"spin.wav found: {SND_SPIN.exists()}")
+st.caption(f"win.wav found: {SND_WIN.exists()}")
+
 # Sidebar
 with st.sidebar:
     st.header("Settings")
     prev_hard = st.session_state.hardcore
-    st.session_state.hardcore = st.toggle(
-        "Hardcore mode",
-        value=st.session_state.hardcore,
-        help="Disables funding and resets, forces balance to 100.",
-    )
+    st.session_state.hardcore = st.toggle("Hardcore mode", value=st.session_state.hardcore)
     if st.session_state.hardcore and not prev_hard:
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
@@ -201,10 +226,10 @@ with st.sidebar:
         st.rerun()
 
     st.session_state.mute = st.toggle("Mute sounds", value=st.session_state.mute)
+
     if not st.session_state.audio_enabled:
-        if st.button("Enable sound"):
+        if st.button("I turned on sound in app"):
             st.session_state.audio_enabled = True
-            js_enable_sound()
 
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
 
@@ -311,8 +336,9 @@ if st.session_state.spins > 0:
     else:
         st.info("No win this spin")
 
-# Sound triggers (after Enable sound)
+# Audio unlock + play
 if st.session_state.audio_enabled:
+    render_audio_unlock_button()
     if st.session_state.queue_spin:
         js_play("spin", st.session_state.mute, delay_ms=60)
     if st.session_state.queue_win:
