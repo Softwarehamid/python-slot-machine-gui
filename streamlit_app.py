@@ -1,3 +1,4 @@
+# streamlit_app.py
 import random
 import json
 import base64
@@ -55,6 +56,8 @@ def init_state():
     ss.setdefault("total_deposited", 0)
     ss.setdefault("queue_spin_snd", False)
     ss.setdefault("queue_win_snd", False)
+    ss.setdefault("auto_spinning", False)
+    ss.setdefault("auto_spin_remaining", 0)
 
 def reset_stats_only():
     st.session_state.spins = 0
@@ -89,6 +92,10 @@ def load_blob(uploaded):
     st.session_state.wins = int(data.get("wins", 0))
     st.session_state.hardcore = bool(data.get("hardcore", False))
     st.session_state.total_deposited = int(data.get("total_deposited", 0))
+    # enforce Hardcore rules on load
+    if st.session_state.hardcore:
+        st.session_state.balance = 100
+        st.session_state.total_deposited = 0
 
 # ---------- UI ----------
 st.set_page_config(page_title="Python Slot Machine", page_icon="🎰", layout="centered")
@@ -105,25 +112,48 @@ with col_title:
     st.title("Python Slot Machine")
     st.caption("Runs in your browser with Streamlit.")
     st.caption("Session saves in memory. Download or load a save file anytime.")
+    st.caption(f"Mode: {'Hardcore' if st.session_state.hardcore else 'Easy'}")
 
 with st.sidebar:
     st.header("Settings")
+    prev_hard = st.session_state.hardcore
     st.session_state.hardcore = st.toggle(
         "Hardcore mode",
         value=st.session_state.hardcore,
-        help="Disables all reset actions.",
+        help="Disables funding and resets, forces balance to 100.",
     )
+    # on switching to Hardcore, enforce rules right away
+    if st.session_state.hardcore and not prev_hard:
+        st.session_state.balance = 100
+        st.session_state.total_deposited = 0
+        st.session_state.auto_spinning = False
+        st.session_state.auto_spin_remaining = 0
+        st.rerun()
+
     mute = st.toggle("Mute sounds", value=False)
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
 
     st.divider()
-    st.header("Funds")
-    deposit = st.number_input("Amount to add", min_value=1, max_value=100000, value=10, step=1)
-    if st.button("Add funds"):
-        st.session_state.balance += deposit
-        st.session_state.total_deposited += deposit
-        st.success(f"Added ${deposit}")
-    st.caption(f"Total deposited: ${st.session_state.total_deposited}")
+    if not st.session_state.hardcore:
+        st.header("Funds")
+        deposit = st.number_input("Amount to add", min_value=1, max_value=100000, value=10, step=1)
+        if st.button("Add funds"):
+            st.session_state.balance += deposit
+            st.session_state.total_deposited += deposit
+            st.success(f"Added ${deposit}")
+        st.caption(f"Total deposited: ${st.session_state.total_deposited}")
+    else:
+        st.header("Funds")
+        st.caption("Funding disabled in Hardcore.")
+
+    st.divider()
+    st.header("Auto spin")
+    auto_rounds = st.number_input("Rounds", min_value=1, max_value=100, value=10, step=1)
+    start_auto = st.button("Start auto spin", disabled=st.session_state.auto_spinning)
+    if start_auto:
+        st.session_state.auto_spinning = True
+        st.session_state.auto_spin_remaining = int(auto_rounds)
+        st.rerun()
 
     st.divider()
     st.write("Save or load")
@@ -132,6 +162,7 @@ with st.sidebar:
     if up is not None:
         load_blob(up)
         st.success("Save loaded")
+        st.rerun()
 
 st.subheader(f"Balance: ${st.session_state.balance}")
 st.text(f"Spins: {st.session_state.spins}   Wins: {st.session_state.wins}")
@@ -147,8 +178,7 @@ with r3:
 # actions
 c1, c2, c3 = st.columns([1, 1, 1])
 can_spin = st.session_state.balance >= bet
-
-spin_clicked = c1.button("Spin", use_container_width=True, disabled=not can_spin)
+spin_clicked = c1.button("Spin", use_container_width=True, disabled=not can_spin or st.session_state.auto_spinning)
 reset_all_clicked = c2.button(
     "Reset balance and stats",
     use_container_width=True,
@@ -160,8 +190,7 @@ reset_stats_clicked = c3.button(
     disabled=st.session_state.hardcore,
 )
 
-# spin
-if spin_clicked and can_spin:
+def do_spin():
     st.session_state.queue_spin_snd = True
     st.session_state.balance -= bet
     reels = spin_reels()
@@ -173,22 +202,36 @@ if spin_clicked and can_spin:
         st.session_state.wins += 1
         st.session_state.balance += win_amt
         st.session_state.queue_win_snd = True
+
+# manual spin
+if spin_clicked and can_spin and not st.session_state.auto_spinning:
+    do_spin()
     st.rerun()
+
+# auto spin engine
+if st.session_state.auto_spinning:
+    if st.session_state.auto_spin_remaining > 0 and st.session_state.balance >= bet:
+        st.session_state.auto_spin_remaining -= 1
+        do_spin()
+        st.rerun()
+    else:
+        st.session_state.auto_spinning = False
+        st.session_state.auto_spin_remaining = 0
 
 # resets
 if reset_all_clicked:
     reset_all()
     st.rerun()
-
 if reset_stats_clicked:
     reset_stats_only()
     st.rerun()
 
 # status
-if st.session_state.last_win > 0:
-    st.success(f"You won ${st.session_state.last_win}")
-else:
-    st.info("No win this spin")
+if st.session_state.spins > 0:
+    if st.session_state.last_win > 0:
+        st.success(f"You won ${st.session_state.last_win}")
+    else:
+        st.info("No win this spin")
 
 # sounds
 html_parts = []
