@@ -1,16 +1,20 @@
 import random
 import json
+import base64
 from io import BytesIO
+from uuid import uuid4
 from pathlib import Path
-import streamlit as st
 
-# paths
+import streamlit as st
+import streamlit.components.v1 as components
+
+# ---------- paths ----------
 BASE_DIR = Path(__file__).parent
 SND_SPIN = BASE_DIR / "assets" / "sound" / "spin.wav"
 SND_WIN  = BASE_DIR / "assets" / "sound" / "win.wav"
 IMG_PREVIEW = BASE_DIR / "images" / "slot-machine-GUI.png"
 
-# game data
+# ---------- game data ----------
 SYMBOLS = ["🍒", "🍋", "🔔", "⭐", "7️⃣"]
 PAYOUTS = {
     ("7️⃣","7️⃣","7️⃣"): 50,
@@ -20,6 +24,7 @@ PAYOUTS = {
     ("🍒","🍒","🍒"): 8,
 }
 
+# ---------- helpers ----------
 def spin_reels():
     return [random.choice(SYMBOLS) for _ in range(3)]
 
@@ -27,9 +32,21 @@ def payout(reels, bet):
     trip = tuple(reels)
     if trip in PAYOUTS:
         return bet * PAYOUTS[trip]
-    if len(set(reels)) == 2:
+    if len(set(reels)) == 2:   # two of a kind
         return bet * 2
     return 0
+
+def play_sound(file_path: Path, muted: bool = False):
+    if not file_path.exists():
+        return
+    data = file_path.read_bytes()
+    b64 = base64.b64encode(data).decode("utf-8")
+    html = f"""
+    <audio autoplay {"muted" if muted else ""}>
+      <source src="data:audio/wav;base64,{b64}" type="audio/wav">
+    </audio>
+    """
+    components.html(html, height=0, key=f"snd-{uuid4()}")
 
 def init_state():
     ss = st.session_state
@@ -73,7 +90,7 @@ def load_blob(uploaded):
     st.session_state.hardcore = bool(data.get("hardcore", False))
     st.session_state.total_deposited = int(data.get("total_deposited", 0))
 
-# UI
+# ---------- UI ----------
 st.set_page_config(page_title="Python Slot Machine", page_icon="🎰", layout="centered")
 init_state()
 
@@ -92,11 +109,10 @@ with col_title:
 with st.sidebar:
     st.header("Settings")
     st.session_state.hardcore = st.toggle(
-        "Hardcore mode",
-        value=st.session_state.hardcore,
+        "Hardcore mode", value=st.session_state.hardcore,
         help="Disables reset while on."
     )
-
+    mute = st.toggle("Mute sounds", value=False)
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
 
     st.divider()
@@ -106,17 +122,12 @@ with st.sidebar:
         st.session_state.balance += deposit
         st.session_state.total_deposited += deposit
         st.success(f"Added ${deposit}")
-
     st.caption(f"Total deposited: ${st.session_state.total_deposited}")
 
     st.divider()
     st.write("Save or load")
-    st.download_button(
-        "Download save",
-        data=save_blob(),
-        file_name="slot_save.json",
-        mime="application/json",
-    )
+    st.download_button("Download save", data=save_blob(),
+                       file_name="slot_save.json", mime="application/json")
     up = st.file_uploader("Load save", type=["json"])
     if up is not None:
         load_blob(up)
@@ -126,32 +137,32 @@ st.subheader(f"Balance: ${st.session_state.balance}")
 st.text(f"Spins: {st.session_state.spins}   Wins: {st.session_state.wins}")
 
 r1, r2, r3 = st.columns(3)
-with r1:
-    st.metric("Reel 1", st.session_state.last_reels[0])
-with r2:
-    st.metric("Reel 2", st.session_state.last_reels[1])
-with r3:
-    st.metric("Reel 3", st.session_state.last_reels[2])
+with r1:  st.metric("Reel 1", st.session_state.last_reels[0])
+with r2:  st.metric("Reel 2", st.session_state.last_reels[1])
+with r3:  st.metric("Reel 3", st.session_state.last_reels[2])
 
 left, right = st.columns(2)
+can_spin = st.session_state.balance >= bet
+spin_clicked = left.button("Spin", use_container_width=True, disabled=not can_spin)
 
-if left.button("Spin", use_container_width=True):
-    if SND_SPIN.exists():
-        st.audio(str(SND_SPIN))
-    if st.session_state.balance < bet:
-        st.error("Insufficient balance")
+def do_spin():
+    play_sound(SND_SPIN, muted=mute)
+    st.session_state.balance -= bet
+    reels = spin_reels()
+    st.session_state.last_reels = reels
+    win_amt = payout(reels, bet)
+    st.session_state.last_win = win_amt
+    st.session_state.spins += 1
+    if win_amt > 0:
+        st.session_state.wins += 1
+        st.session_state.balance += win_amt
+        play_sound(SND_WIN, muted=mute)
+
+if spin_clicked:
+    if can_spin:
+        do_spin()
     else:
-        st.session_state.balance -= bet
-        reels = spin_reels()
-        st.session_state.last_reels = reels
-        win_amt = payout(reels, bet)
-        st.session_state.last_win = win_amt
-        st.session_state.spins += 1
-        if win_amt > 0:
-            st.session_state.wins += 1
-            st.session_state.balance += win_amt
-            if SND_WIN.exists():
-                st.audio(str(SND_WIN))
+        st.error("Insufficient balance")
 
 if right.button("Reset balance and stats", use_container_width=True):
     reset_stats()
