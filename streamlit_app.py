@@ -5,7 +5,6 @@ from io import BytesIO
 from pathlib import Path
 import base64
 import streamlit as st
-import streamlit.components.v1 as components
 
 # ---------- paths ----------
 BASE_DIR = Path(__file__).parent
@@ -101,75 +100,73 @@ def load_blob(uploaded):
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
 
-# ---------- audio component (persistent via fixed key) ----------
-def mount_audio_component():
+# ---------- audio kernel (no components) ----------
+def inject_audio_kernel():
     spin_b64 = base64.b64encode(SND_SPIN.read_bytes()).decode("utf-8") if SND_SPIN.exists() else ""
     win_b64  = base64.b64encode(SND_WIN.read_bytes()).decode("utf-8")  if SND_WIN.exists()  else ""
-    components.html(
+    st.markdown(
         f"""
-        <div id="audio-kernel"></div>
         <script>
         (function() {{
-          // keep this iframe alive (same key), register once
-          if (window.__slotKernelReady) return;
-          window.__slotKernelReady = true;
+          const topw = window.top || window.parent || window;
+          if (!topw.__slotKernel) {{
+            const SPIN_URL = "{'data:audio/wav;base64,' + spin_b64 if spin_b64 else ''}";
+            const WIN_URL  = "{'data:audio/wav;base64,' + win_b64  if win_b64  else ''}";
+            let spin = SPIN_URL ? new Audio(SPIN_URL) : null;
+            let win  = WIN_URL  ? new Audio(WIN_URL)  : null;
+            if (spin) spin.preload = "auto";
+            if (win)  win.preload  = "auto";
 
-          let spin = null, win = null, ready = false;
-
-          function ensure() {{
-            if (ready) return;
-            if ("{spin_b64}") {{
-              spin = new Audio("data:audio/wav;base64,{spin_b64}");
-              spin.preload = "auto";
-            }}
-            if ("{win_b64}") {{
-              win  = new Audio("data:audio/wav;base64,{win_b64}");
-              win.preload  = "auto";
-            }}
-            ready = true;
+            topw.__slotKernel = {{
+              enable: function() {{
+                const kick = (a) => a && a.play().then(() => {{ a.pause(); a.currentTime = 0; }}).catch(()=>{{}});
+                kick(spin); kick(win);
+              }},
+              play: function(kind, muted) {{
+                const a = (kind === "spin") ? spin : win;
+                if (!a) return;
+                a.muted = !!muted;
+                a.currentTime = 0;
+                a.play().catch(()=>{{}});
+              }}
+            }};
           }}
-
-          function unlock() {{
-            ensure();
-            const kick = a => a && a.play().then(() => {{
-              a.pause(); a.currentTime = 0;
-            }}).catch(()=>{{}});
-            kick(spin); kick(win);
-          }}
-
-          // Listen for messages from the app
-          window.addEventListener("message", (ev) => {{
-            const d = ev.data || {{}};
-            if (!d || !d.__slot) return;
-            ensure();
-            if (d.cmd === "enable") {{
-              unlock();
-              return;
-            }}
-            if (d.cmd === "play") {{
-              const a = d.name === "spin" ? spin : win;
-              if (!a) return;
-              a.muted = !!d.muted;
-              a.currentTime = 0;
-              a.play().catch(()=>{{}});
-            }}
-          }}, false);
         }})();
         </script>
         """,
-        height=0,
-        key="audio-kernel",  # important: keeps the iframe instance alive across reruns
+        unsafe_allow_html=True,
     )
 
-def post_to_kernel(payload: dict):
-    # send a message this run; the persistent iframe listens and plays audio
-    js = json.dumps({"__slot": True, **payload})
-    st.markdown(f"<script>window.postMessage({js}, '*');</script>", unsafe_allow_html=True)
+def js_enable_sound():
+    st.markdown(
+        """
+        <script>
+          (function(){
+            const topw = window.top || window.parent || window;
+            if (topw.__slotKernel) topw.__slotKernel.enable();
+          })();
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
+
+def js_play(kind: str, muted: bool, delay_ms: int = 0):
+    st.markdown(
+        f"""
+        <script>
+          setTimeout(function(){{
+            const topw = window.top || window.parent || window;
+            if (topw.__slotKernel) topw.__slotKernel.play("{kind}", {str(muted).lower()});
+          }}, {int(delay_ms)});
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # ---------- UI ----------
 st.set_page_config(page_title="Python Slot Machine", page_icon="🎰", layout="centered")
 init_state()
-mount_audio_component()
+inject_audio_kernel()
 
 # Header
 col_img, col_title = st.columns([1, 2], vertical_alignment="center")
@@ -203,12 +200,11 @@ with st.sidebar:
         st.session_state.auto_spin_remaining = 0
         st.rerun()
 
-    # sound controls
     st.session_state.mute = st.toggle("Mute sounds", value=st.session_state.mute)
     if not st.session_state.audio_enabled:
         if st.button("Enable sound"):
             st.session_state.audio_enabled = True
-            post_to_kernel({"cmd": "enable"})
+            js_enable_sound()
 
     bet = st.number_input("Bet per spin", min_value=1, max_value=20, value=5, step=1)
 
@@ -253,7 +249,7 @@ with st.sidebar:
         st.success("Save loaded")
         st.rerun()
 
-# Placeholders for stats and reels, then actions, then render
+# Placeholders
 ph_balance = st.empty()
 ph_stats   = st.empty()
 cols = st.columns(3)
@@ -281,7 +277,7 @@ def do_spin():
         st.session_state.balance += win_amt
         st.session_state.queue_win = True
 
-# Handle actions first
+# Actions
 if spin_clicked and can_spin and not st.session_state.auto_spinning:
     do_spin()
 
@@ -301,7 +297,7 @@ if reset_stats_clicked:
     reset_stats_only()
     st.rerun()
 
-# Render current state
+# Render
 ph_balance.subheader(f"Balance: ${st.session_state.balance}")
 ph_stats.text(f"Spins: {st.session_state.spins}   Wins: {st.session_state.wins}")
 ph_r1.metric("Reel 1", st.session_state.last_reels[0])
@@ -315,12 +311,12 @@ if st.session_state.spins > 0:
     else:
         st.info("No win this spin")
 
-# Sound triggers (works after “Enable sound” once)
+# Sound triggers (after Enable sound)
 if st.session_state.audio_enabled:
     if st.session_state.queue_spin:
-        post_to_kernel({"cmd": "play", "name": "spin", "muted": st.session_state.mute})
+        js_play("spin", st.session_state.mute, delay_ms=60)
     if st.session_state.queue_win:
-        post_to_kernel({"cmd": "play", "name": "win", "muted": st.session_state.mute})
+        js_play("win",  st.session_state.mute, delay_ms=220)
 
 st.session_state.queue_spin = False
 st.session_state.queue_win  = False
