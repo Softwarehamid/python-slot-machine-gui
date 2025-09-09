@@ -1,11 +1,10 @@
-# streamlit_app.py
 import random
 import json
 import base64
 from io import BytesIO
 from uuid import uuid4
 from pathlib import Path
-
+import time
 import streamlit as st
 
 # ---------- paths ----------
@@ -45,6 +44,18 @@ def audio_html(file_path: Path, muted: bool) -> str:
         f'<source src="data:audio/wav;base64,{b64}" type="audio/wav"></audio>'
     )
 
+def schedule_rerun(delay_ms: int):
+    st.markdown(
+        f"""
+        <script>
+          setTimeout(() => {{
+            window.parent.postMessage({{type: "streamlit:rerun"}}, "*");
+          }}, {int(delay_ms)});
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def init_state():
     ss = st.session_state
     ss.setdefault("balance", 100)
@@ -58,6 +69,7 @@ def init_state():
     ss.setdefault("queue_win_snd", False)
     ss.setdefault("auto_spinning", False)
     ss.setdefault("auto_spin_remaining", 0)
+    ss.setdefault("auto_delay_ms", 350)
 
 def reset_stats_only():
     st.session_state.spins = 0
@@ -92,7 +104,7 @@ def load_blob(uploaded):
     st.session_state.wins = int(data.get("wins", 0))
     st.session_state.hardcore = bool(data.get("hardcore", False))
     st.session_state.total_deposited = int(data.get("total_deposited", 0))
-    # enforce Hardcore on load
+    # enforce Hardcore rules on load
     if st.session_state.hardcore:
         st.session_state.balance = 100
         st.session_state.total_deposited = 0
@@ -147,9 +159,19 @@ with st.sidebar:
 
     st.divider()
     st.header("Auto spin")
+    speed = st.select_slider(
+        "Spin speed",
+        options=["Slow", "Normal", "Fast"],
+        value="Normal",
+        help="Controls delay between auto spins.",
+    )
+    st.session_state.auto_delay_ms = {"Slow": 900, "Normal": 350, "Fast": 120}[speed]
     auto_rounds = st.number_input("Rounds", min_value=1, max_value=100, value=10, step=1)
-    start_auto = st.button("Start auto spin", disabled=st.session_state.auto_spinning)
-    stop_auto = st.button("Stop auto spin", disabled=not st.session_state.auto_spinning)
+    cols = st.columns(2)
+    with cols[0]:
+        start_auto = st.button("Start auto spin", disabled=st.session_state.auto_spinning)
+    with cols[1]:
+        stop_auto = st.button("Stop auto spin", disabled=not st.session_state.auto_spinning)
     if start_auto:
         st.session_state.auto_spinning = True
         st.session_state.auto_spin_remaining = int(auto_rounds)
@@ -199,21 +221,20 @@ def do_spin():
         st.session_state.balance += win_amt
         st.session_state.queue_win_snd = True
 
-# manual spin
+# manual spin: no immediate rerun
 if spin_clicked and can_spin and not st.session_state.auto_spinning:
     do_spin()
-    st.rerun()
 
-# auto spin engine
+# auto spin engine: one spin per run, then schedule a timed rerun
 if st.session_state.auto_spinning:
     if st.session_state.auto_spin_remaining > 0 and st.session_state.balance >= bet:
         st.session_state.auto_spin_remaining -= 1
         do_spin()
-        st.rerun()
+        schedule_rerun(st.session_state.auto_delay_ms)
     else:
         st.session_state.auto_spinning = False
         st.session_state.auto_spin_remaining = 0
-        st.rerun()
+        # no rerun here; page stays usable
 
 # resets
 if reset_all_clicked:
