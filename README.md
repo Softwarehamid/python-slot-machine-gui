@@ -26,8 +26,7 @@ A desktop-based slot machine game rebuilt for the web with **Streamlit**.
 Play directly in your browser, complete with spin animations, sounds, and stat tracking.  
 
 ## 🚀 Live Demo
-Play it here: [slots.abdulhamidoguntade.com](https://slots.abdulhamidoguntade.com)
-
+**Play it here:** https://hamid-slots.streamlit.app/
 ## 🛠 Features
 - GUI-based slot machine using Streamlit
 - Spin animations + sound effects (🎵 spin & win)
